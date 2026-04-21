@@ -17788,9 +17788,13 @@ function openPeopleTab(panelId, btn) {
 }
 
 function openPeopleStaffTab(tabId, btn) {
-  document.querySelectorAll('#peopleStaffPanel .tab-panel').forEach(function(panel) { panel.classList.remove('active'); });
+  document.querySelectorAll('#peopleStaffPanel .tab-panel').forEach(function(panel) {
+    panel.style.display = 'none';
+    panel.classList.remove('active');
+  });
   document.querySelectorAll('#peopleStaffTabBar .tb').forEach(function(b) { b.classList.remove('active'); });
-  var tabPanel = document.getElementById(tabId); if (tabPanel) tabPanel.classList.add('active');
+  var tabPanel = document.getElementById(tabId);
+  if (tabPanel) { tabPanel.style.display = ''; tabPanel.classList.add('active'); }
   if (btn) btn.classList.add('active');
   if (tabId === 'pplStList')  pstRenderList();
   if (tabId === 'pplStRoles') pstRenderRoles();
