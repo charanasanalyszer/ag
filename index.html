@@ -1108,6 +1108,7 @@
         <button class="tb"        id="sdpbtLeave"   onclick="openSDTab('sdpLeave',this)"><i class="fa-solid fa-calendar-minus" style="margin-right:.35rem"></i>Leave</button>
         <button class="tb"        id="sdpbtDocs"    onclick="openSDTab('sdpDocs',this)"><i class="fa-solid fa-folder-open" style="margin-right:.35rem"></i>Documents</button>
         <button class="tb"        id="sdpbtRoles"   onclick="openSDTab('sdpRoles',this)"><i class="fa-solid fa-tags" style="margin-right:.35rem"></i>Roles</button>
+        <button class="tb"        id="sdpbtSalary"  onclick="openSDTab('sdpSalary',this)"><i class="fa-solid fa-money-bill-wave" style="margin-right:.35rem"></i>Salary</button>
       </div>
 
       <!-- Tab: Directory -->
@@ -1322,6 +1323,81 @@
             <h3><i class="fa-solid fa-tags"></i> Defined Roles</h3>
             <div id="sdpRolesList"><p style="color:var(--muted);font-size:.85rem">No roles defined yet.</p></div>
           </div>
+        </div>
+      </div>
+
+      <!-- Tab: Salary -->
+      <div id="sdpSalary" class="tab-panel" style="display:none">
+        <div class="sec-stack">
+
+          <!-- Salary Form -->
+          <div class="card">
+            <h3 id="sdpSalaryFormTitle"><i class="fa-solid fa-money-bill-wave"></i> Set / Update Staff Salary</h3>
+            <input type="hidden" id="sdpSalaryEditId"/>
+            <div class="frow c3">
+              <div class="fg"><label>Staff Member *</label>
+                <select id="sdpSalStaff" onchange="sdpSalOnStaffChange()">
+                  <option value="">— Select Staff —</option>
+                </select>
+              </div>
+              <div class="fg"><label>Role / Position</label>
+                <input type="text" id="sdpSalRole" placeholder="Auto-filled from profile…"/>
+              </div>
+              <div class="fg"><label>Salary Type</label>
+                <select id="sdpSalType">
+                  <option>Monthly</option><option>Weekly</option><option>Daily</option><option>Annual</option>
+                </select>
+              </div>
+            </div>
+            <div class="frow c3">
+              <div class="fg"><label>Basic Salary (KES) *</label>
+                <input type="number" id="sdpSalBasic" placeholder="e.g. 45000" min="0" oninput="sdpCalcNetSalary()"/>
+              </div>
+              <div class="fg"><label>Allowances (KES)</label>
+                <input type="number" id="sdpSalAllow" placeholder="0" min="0" value="0" oninput="sdpCalcNetSalary()"/>
+              </div>
+              <div class="fg"><label>Other Deductions (KES)</label>
+                <input type="number" id="sdpSalDeduct" placeholder="0" min="0" value="0" oninput="sdpCalcNetSalary()"/>
+              </div>
+            </div>
+            <div class="frow c3">
+              <div class="fg"><label>SHA / NHIF (KES)</label>
+                <input type="number" id="sdpSalNHIF" placeholder="0" min="0" value="0" oninput="sdpCalcNetSalary()"/>
+              </div>
+              <div class="fg"><label>NSSF (KES)</label>
+                <input type="number" id="sdpSalNSSF" placeholder="0" min="0" value="0" oninput="sdpCalcNetSalary()"/>
+              </div>
+              <div class="fg"><label>Net Salary (KES)</label>
+                <input type="number" id="sdpSalNet" placeholder="Auto-calculated" readonly style="background:var(--bg-muted);font-weight:700;color:var(--primary)"/>
+              </div>
+            </div>
+            <div class="fg" style="margin-top:.25rem"><label>Notes</label>
+              <input type="text" id="sdpSalNotes" placeholder="Optional notes…"/>
+            </div>
+            <div class="btn-row-compact" style="margin-top:.75rem">
+              <button class="btn btn-primary btn-sm" onclick="sdpSaveStaffSalary()"><i class="fa-solid fa-floppy-disk" style="margin-right:.3rem"></i>Save Salary</button>
+              <button class="btn btn-outline btn-sm" onclick="sdpClearSalaryForm()"><i class="fa-solid fa-xmark" style="margin-right:.3rem"></i>Clear</button>
+            </div>
+          </div>
+
+          <!-- Salary Records Table -->
+          <div class="card">
+            <div class="ctbar" style="margin-bottom:.75rem">
+              <h3><i class="fa-solid fa-table-list"></i> Salary Records</h3>
+              <button class="btn btn-outline btn-sm" onclick="exportStaffSalaryCSV()"><i class="fa-solid fa-file-csv"></i> Export CSV</button>
+            </div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr>
+                  <th>#</th><th>Name</th><th>Role</th><th>Type</th>
+                  <th>Basic</th><th>Allowances</th><th>Deductions</th>
+                  <th>SHA</th><th>NSSF</th><th>Net Salary</th><th>Actions</th>
+                </tr></thead>
+                <tbody id="sdpSalBody"></tbody>
+              </table>
+            </div>
+          </div>
+
         </div>
       </div>
 

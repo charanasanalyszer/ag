@@ -18138,6 +18138,8 @@ function initStaffDetailsSection() {
   sdpPopulateDropdowns();
   sdpRenderRolesList();
   sdpRenderDocsList();
+  sdpPopulateSalaryStaffDropdown();
+  sdpRenderSalaryTable();
 }
 
 function openSDTab(tabId, btn) {
@@ -18146,8 +18148,9 @@ function openSDTab(tabId, btn) {
   const panel = document.getElementById(tabId);
   if (panel) { panel.style.display = ''; panel.classList.add('active'); }
   if (btn) btn.classList.add('active');
-  if (tabId === 'sdpLeave') { sdpPopulateLeaveDropdowns(); sdpRenderLeaveList(); }
-  if (tabId === 'sdpDocs')  { sdpPopulateDocDropdownSchool(); sdpRenderDocsList(); }
+  if (tabId === 'sdpLeave')  { sdpPopulateLeaveDropdowns(); sdpRenderLeaveList(); }
+  if (tabId === 'sdpDocs')   { sdpPopulateDocDropdownSchool(); sdpRenderDocsList(); }
+  if (tabId === 'sdpSalary') { sdpPopulateSalaryStaffDropdown(); sdpRenderSalaryTable(); }
 }
 
 function sdpRenderStats() {
@@ -18274,6 +18277,202 @@ function sdpDeleteStaff(id) {
   pstPopulateDeptFilter(); pstRenderList(); // keep People list in sync
   showToast('Staff record deleted.');
 }
+
+
+
+// ══════════════════════════════════════════════════════════════════
+// STAFF DETAILS — Salary Tab
+// Reads/writes the same charanas_staffSalaries key as Finances,
+// so changes here instantly reflect in Finances → Staff Salary.
+// ══════════════════════════════════════════════════════════════════
+
+function sdpPopulateSalaryStaffDropdown() {
+  const sel = document.getElementById('sdpSalStaff');
+  if (!sel) return;
+  const staff = loadStaffDetails();
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— Select Staff —</option>';
+  staff.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = s.name + (s.role ? ' (' + s.role + ')' : '');
+    sel.appendChild(opt);
+  });
+  if (cur) sel.value = cur;
+}
+
+function sdpSalOnStaffChange() {
+  const sel  = document.getElementById('sdpSalStaff');
+  const staffId = sel?.value || '';
+  const roleEl  = document.getElementById('sdpSalRole');
+
+  // Auto-fill role from staff profile
+  if (staffId && roleEl) {
+    const s = loadStaffDetails().find(x => x.id === staffId);
+    if (s && s.role) roleEl.value = s.role;
+  }
+
+  // If this staff already has a saved salary record, pre-fill the form
+  const existing = loadStaffSalaries().find(r => r.staffId === staffId);
+  if (existing) {
+    sdpFillSalaryForm(existing);
+    const t = document.getElementById('sdpSalaryFormTitle');
+    if (t) t.innerHTML = '<i class="fa-solid fa-pen"></i> Update Salary Record';
+  } else {
+    // Clear numeric fields but keep the role we just set
+    ['sdpSalBasic','sdpSalAllow','sdpSalDeduct','sdpSalNHIF','sdpSalNSSF','sdpSalNet','sdpSalNotes'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && id !== 'sdpSalRole') el.value = id.endsWith('Net') ? '' : (id.endsWith('Notes') ? '' : '0');
+    });
+    document.getElementById('sdpSalBasic').value = '';
+    document.getElementById('sdpSalNet').value = '';
+    document.getElementById('sdpSalNotes').value = '';
+    document.getElementById('sdpSalaryEditId').value = '';
+    const t = document.getElementById('sdpSalaryFormTitle');
+    if (t) t.innerHTML = '<i class="fa-solid fa-money-bill-wave"></i> Set / Update Staff Salary';
+  }
+}
+
+function sdpFillSalaryForm(r) {
+  document.getElementById('sdpSalaryEditId').value = r.id || '';
+  const sel = document.getElementById('sdpSalStaff');
+  if (sel) sel.value = r.staffId || '';
+  document.getElementById('sdpSalRole').value    = r.role    || '';
+  document.getElementById('sdpSalBasic').value   = r.basic   || '';
+  document.getElementById('sdpSalAllow').value   = r.allow   || 0;
+  document.getElementById('sdpSalDeduct').value  = r.deduct  || 0;
+  document.getElementById('sdpSalNHIF').value    = r.nhif    || 0;
+  document.getElementById('sdpSalNSSF').value    = r.nssf    || 0;
+  document.getElementById('sdpSalNet').value     = r.net     || '';
+  document.getElementById('sdpSalNotes').value   = r.notes   || '';
+  const typeEl = document.getElementById('sdpSalType');
+  if (typeEl && r.type) typeEl.value = r.type;
+}
+
+function sdpCalcNetSalary() {
+  const basic  = parseFloat(document.getElementById('sdpSalBasic')?.value)  || 0;
+  const allow  = parseFloat(document.getElementById('sdpSalAllow')?.value)  || 0;
+  const deduct = parseFloat(document.getElementById('sdpSalDeduct')?.value) || 0;
+  const nhif   = parseFloat(document.getElementById('sdpSalNHIF')?.value)   || 0;
+  const nssf   = parseFloat(document.getElementById('sdpSalNSSF')?.value)   || 0;
+  const net    = basic + allow - deduct - nhif - nssf;
+  const netEl  = document.getElementById('sdpSalNet');
+  if (netEl) netEl.value = net.toFixed(2);
+}
+
+function sdpSaveStaffSalary() {
+  const sel = document.getElementById('sdpSalStaff');
+  const staffId = sel?.value || '';
+  const name    = sel?.options[sel.selectedIndex]?.text.split(' (')[0] || '';
+  const role    = (document.getElementById('sdpSalRole')?.value  || '').trim();
+  const type    = document.getElementById('sdpSalType')?.value   || 'Monthly';
+  const basic   = parseFloat(document.getElementById('sdpSalBasic')?.value)  || 0;
+  const allow   = parseFloat(document.getElementById('sdpSalAllow')?.value)  || 0;
+  const deduct  = parseFloat(document.getElementById('sdpSalDeduct')?.value) || 0;
+  const nhif    = parseFloat(document.getElementById('sdpSalNHIF')?.value)   || 0;
+  const nssf    = parseFloat(document.getElementById('sdpSalNSSF')?.value)   || 0;
+  const net     = basic + allow - deduct - nhif - nssf;
+  const notes   = (document.getElementById('sdpSalNotes')?.value || '').trim();
+
+  if (!staffId) { alert('Please select a staff member.'); return; }
+  if (!basic)   { alert('Please enter a basic salary amount.'); return; }
+
+  let data    = loadStaffSalaries();
+  const editId = document.getElementById('sdpSalaryEditId')?.value;
+
+  // Also check if this staffId already has a record (upsert by staffId)
+  const byStaffIdx = data.findIndex(r => r.staffId === staffId);
+
+  const record = { name, staffId, role, type, basic, allow, deduct, nhif, nssf, net, notes };
+
+  if (editId) {
+    const idx = data.findIndex(r => r.id === editId);
+    if (idx > -1) { data[idx] = { ...data[idx], ...record }; }
+    else { data.push({ id: editId, ...record }); }
+  } else if (byStaffIdx > -1) {
+    // Update existing record for this staff member
+    data[byStaffIdx] = { ...data[byStaffIdx], ...record };
+    document.getElementById('sdpSalaryEditId').value = data[byStaffIdx].id;
+  } else {
+    const newRec = { id: 'ss_' + Date.now(), ...record };
+    data.push(newRec);
+    document.getElementById('sdpSalaryEditId').value = newRec.id;
+  }
+
+  saveStaffSalariesToStorage(data);
+
+  // Refresh both this table and the Finances salary table if visible
+  sdpRenderSalaryTable();
+  renderStaffSalaryTable();   // keeps Finances → Staff Salary in sync
+
+  const t = document.getElementById('sdpSalaryFormTitle');
+  if (t) t.innerHTML = '<i class="fa-solid fa-pen"></i> Update Salary Record';
+
+  showToast('Salary saved and reflected in Finances <i class="fa-solid fa-check"></i>', 'success');
+}
+
+function sdpClearSalaryForm() {
+  document.getElementById('sdpSalaryEditId').value = '';
+  ['sdpSalStaff','sdpSalType'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.selectedIndex = 0;
+  });
+  ['sdpSalRole','sdpSalBasic','sdpSalNotes','sdpSalNet'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  ['sdpSalAllow','sdpSalDeduct','sdpSalNHIF','sdpSalNSSF'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '0';
+  });
+  const t = document.getElementById('sdpSalaryFormTitle');
+  if (t) t.innerHTML = '<i class="fa-solid fa-money-bill-wave"></i> Set / Update Staff Salary';
+}
+
+function sdpRenderSalaryTable() {
+  const body = document.getElementById('sdpSalBody');
+  if (!body) return;
+  const data = loadStaffSalaries();
+  if (!data.length) {
+    body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:2rem">No salary records yet. Select a staff member above to add one.</td></tr>';
+    return;
+  }
+  body.innerHTML = data.map((r, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td><strong>${r.name}</strong></td>
+      <td>${r.role || '—'}</td>
+      <td><span class="badge">${r.type}</span></td>
+      <td>KES ${Number(r.basic).toLocaleString()}</td>
+      <td>KES ${Number(r.allow).toLocaleString()}</td>
+      <td>KES ${Number(r.deduct).toLocaleString()}</td>
+      <td>KES ${Number(r.nhif).toLocaleString()}</td>
+      <td>KES ${Number(r.nssf).toLocaleString()}</td>
+      <td style="font-weight:700;color:var(--primary)">KES ${Number(r.net).toLocaleString()}</td>
+      <td>
+        <button class="btn btn-outline btn-xs" onclick="sdpEditSalaryRecord('${r.id}')"><i class="fa-solid fa-pen"></i></button>
+        <button class="btn btn-danger btn-xs"  onclick="sdpDeleteSalaryRecord('${r.id}')"><i class="fa-solid fa-trash"></i></button>
+      </td>
+    </tr>`).join('');
+}
+
+function sdpEditSalaryRecord(id) {
+  const r = loadStaffSalaries().find(x => x.id === id);
+  if (!r) return;
+  sdpPopulateSalaryStaffDropdown();
+  sdpFillSalaryForm(r);
+  const t = document.getElementById('sdpSalaryFormTitle');
+  if (t) t.innerHTML = '<i class="fa-solid fa-pen"></i> Edit Salary Record';
+  window.scrollTo({ top: document.getElementById('sdpSalary')?.offsetTop || 0, behavior: 'smooth' });
+}
+
+function sdpDeleteSalaryRecord(id) {
+  if (!confirm('Delete this salary record? It will also be removed from Finances.')) return;
+  let data = loadStaffSalaries().filter(r => r.id !== id);
+  saveStaffSalariesToStorage(data);
+  sdpRenderSalaryTable();
+  renderStaffSalaryTable();  // sync Finances table
+  showToast('Salary record deleted.');
+}
+
 
 function platExportStaffCSV() {
   const data = loadStaffDetails();
