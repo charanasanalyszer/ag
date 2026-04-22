@@ -17770,13 +17770,18 @@ function savePeopleBOM(arr) {
 }
 
 function initPeopleSection() {
+  // Temporarily show BOM panel so peopleRenderBOMTable can find its tbody
+  var bomPanel = document.getElementById('peopleBOMPanel');
+  if (bomPanel) bomPanel.style.display = 'block';
+  peopleRenderBOMTable();
+  if (bomPanel) bomPanel.style.display = '';
+
   // Default to Staff panel, reset sub-tabs to list view
   openPeopleTab('peopleStaffPanel', document.getElementById('pmtStaff'));
   // Always start on the Staff List sub-tab
   openPeopleStaffTab('pplStList', document.getElementById('pstbList'));
   pstPopulateDeptFilter();
   pstRenderList();
-  peopleRenderBOMTable();
 }
 
 function openPeopleTab(panelId, btn) {
@@ -17785,6 +17790,8 @@ function openPeopleTab(panelId, btn) {
   const panel = document.getElementById(panelId);
   if (panel) panel.classList.add('active');
   if (btn) btn.classList.add('active');
+  if (panelId === 'peopleBOMPanel') peopleRenderBOMTable();
+  if (panelId === 'peopleStaffPanel') { pstPopulateDeptFilter(); pstRenderList(); }
 }
 
 function openPeopleStaffTab(tabId, btn) {
@@ -17794,7 +17801,7 @@ function openPeopleStaffTab(tabId, btn) {
   });
   document.querySelectorAll('#peopleStaffTabBar .tb').forEach(function(b) { b.classList.remove('active'); });
   var tabPanel = document.getElementById(tabId);
-  if (tabPanel) { tabPanel.style.display = ''; tabPanel.classList.add('active'); }
+  if (tabPanel) { tabPanel.style.display = 'block'; tabPanel.classList.add('active'); }
   if (btn) btn.classList.add('active');
   if (tabId === 'pplStList')  pstRenderList();
   if (tabId === 'pplStRoles') pstRenderRoles();
