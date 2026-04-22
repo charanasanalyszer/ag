@@ -1346,7 +1346,7 @@ function enterPlatformDashboard() {
   const mbnRestore = document.getElementById('mbnRestoreTab');
   if (mbnRestore) mbnRestore.style.display = 'none';
   // Platform portal: hide school-specific nav, only show Platform Admin link
-  ['subjects','classes','teachers','students','timetable','exambuilder','exams','reports','papers','fees','people','staffdetails','messaging','settings'].forEach(s=>{
+  ['subjects','classes','teachers','students','timetable','exambuilder','exams','reports','papers','fees','messaging','settings'].forEach(s=>{
     const el=document.querySelector('[data-s="'+s+'"]'); if(el) el.style.display='none';
   });
   // Hide school-only exam tabs for platform admin
@@ -2389,8 +2389,6 @@ const NAV_CONFIG_SCHEMA = [
     { id:'tabFeeReminders',  label:'<i class="fa-solid fa-bell"></i> Reminders' },
     { id:'tabFeeReceipts',   label:'<i class="fa-solid fa-receipt"></i> Receipts' },
   ]},
-  { section:'people',       label:'<i class="fa-solid fa-users"></i> People',                 tabs:[] },
-  { section:'staffdetails', label:'<i class="fa-solid fa-id-card"></i> Staff Details',         tabs:[] },
   { section:'messaging',   label:'<i class="fa-solid fa-comments"></i> Messaging',          tabs:[] },
   { section:'settings',    label:'<i class="fa-solid fa-screwdriver-wrench"></i>️ Settings',            tabs:[] },
 ];
@@ -3172,7 +3170,7 @@ function doLogout() {
   if (mbnRestore) { mbnRestore.classList.remove('visible'); mbnRestore.style.display = 'none'; }
   document.body.classList.remove('mbn-hidden');
   // Restore ALL nav links in both sidebar AND mobile bottom nav for next login
-  ['dashboard','subjects','classes','teachers','students','timetable','exambuilder','exams','reports','papers','fees','people','messaging','staffdetails','settings'].forEach(s=>{
+  ['dashboard','subjects','classes','teachers','students','timetable','exambuilder','exams','reports','papers','fees','messaging','settings'].forEach(s=>{
     document.querySelectorAll('[data-s="'+s+'"]').forEach(el => el.style.display='');
   });
   // Also restore topbar user display
@@ -3258,7 +3256,7 @@ function launchApp() {
     const teacherAllowed = new Set(['dashboard','exambuilder','papers']);
     // Settings nav: only show if NOT restricted
     if (!settings.restrictTeacherSettings) teacherAllowed.add('settings');
-    const allSecs = ['dashboard','subjects','classes','teachers','students','timetable','exams','reports','fees','people','staffdetails','messaging','settings','exambuilder','papers'];
+    const allSecs = ['dashboard','subjects','classes','teachers','students','timetable','exams','reports','fees','messaging','settings','exambuilder','papers'];
     // Apply show/hide to BOTH sidebar AND mobile bottom nav via querySelectorAll
     allSecs.forEach(sec => {
       const show = teacherAllowed.has(sec);
@@ -9927,8 +9925,6 @@ function go(sec, el) {
   if (sec === 'reports')    { populateReportDropdowns(); }
   if (sec === 'messaging')  { loadMsgRecipients(); }
   if (sec === 'fees')       { initFeesSection(); }
-  if (sec === 'people')     { initPeopleSection(); }
-  if (sec === 'staffdetails') { initStaffDetailsSection(); }
   if (sec === 'papers')     { initPapersSection(); }
   if (sec === 'settings')   { renderTeacherPreferences(); }
   if (sec === 'platform')   { renderPlatformDashboard(); _navCfgMode='global'; navCfgSwitchMode('global'); platRenderNavConfig(); platRenderLiteModeConfig(); platLoadContactInputs(); themeRenderSwatches(); /* Activate first platform tab */ openPlatTab('platTab-schools', document.querySelector('#platTabBar .plat-tab-btn')); }
@@ -18246,9 +18242,7 @@ function sdpClearForm() {
 
 function sdpEditStaff(id) {
   // Redirect to People > Staff > Edit (shared data store)
-  go('people', document.querySelector('[data-s=people]'));
-  openPeopleTab('peopleStaffPanel', document.getElementById('pmtStaff'));
-  pstEditStaff(id);
+  // Staff editing now handled in Staff Details section
 }
 
 function sdpDeleteStaff(id) {
