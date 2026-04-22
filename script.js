@@ -17810,7 +17810,8 @@ function openPeopleStaffTab(tabId, btn) {
 // ── Staff List ──
 
 function pstPopulateDeptFilter() {
-  const staff = loadPeopleStaff();
+  // Read from unified staffDetails store
+  const staff = loadStaffDetails();
   const depts = [...new Set(staff.map(s => s.dept).filter(Boolean))].sort();
   const sel = document.getElementById('pstDeptFilter');
   if (!sel) return;
@@ -17823,7 +17824,8 @@ function pstFilterStaff() {
 }
 
 function pstRenderList() {
-  const staff  = loadPeopleStaff();
+  // Use unified staffDetails store so People & Staff Details stay in sync
+  const staff  = loadStaffDetails();
   const search = (document.getElementById('pstSearch')?.value || '').toLowerCase();
   const dept   = document.getElementById('pstDeptFilter')?.value || '';
   const body   = document.getElementById('pstBody');
@@ -17831,62 +17833,84 @@ function pstRenderList() {
 
   const filtered = staff.filter(s => {
     const matchSearch = !search ||
-      (s.name   || '').toLowerCase().includes(search) ||
-      (s.role   || '').toLowerCase().includes(search) ||
-      (s.dept   || '').toLowerCase().includes(search);
+      (s.name    || '').toLowerCase().includes(search) ||
+      (s.role    || '').toLowerCase().includes(search) ||
+      (s.dept    || '').toLowerCase().includes(search) ||
+      (s.staffId || '').toLowerCase().includes(search);
     const matchDept = !dept || s.dept === dept;
     return matchSearch && matchDept;
   });
 
   if (!filtered.length) {
-    body.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem">${staff.length ? 'No matches found.' : 'No staff records yet. Click <strong>Add New Staff</strong> to get started.'}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:2rem">${staff.length ? 'No matches found.' : 'No staff records yet. Click <strong>Add New Staff</strong> to get started.'}</td></tr>`;
     return;
   }
 
-  body.innerHTML = filtered.map((s,i) => `
+  const statusColour = { Active:'#16a34a', 'On Leave':'#f59e0b', Resigned:'#ef4444', Retired:'#6b7280' };
+  body.innerHTML = filtered.map((s,i) => {
+    const sc = statusColour[s.status] || '#6b7280';
+    const statusBadge = s.status ? `<span class="badge" style="background:${sc};color:#fff;font-size:.7rem">${s.status}</span>` : '—';
+    return `
     <tr>
       <td>${i+1}</td>
       <td><strong>${s.name || '—'}</strong></td>
       <td>${s.role || '—'}</td>
-      <td>${s.dept || '—'}</td>
+      <td>${s.dept ? `<span class="badge">${s.dept}</span>` : '—'}</td>
       <td>${s.phone || '—'}</td>
       <td>${s.email || '—'}</td>
-      <td>${s.tsc || '—'}</td>
+      <td>${s.staffId || '—'}</td>
+      <td>${statusBadge}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-outline btn-xs" onclick="pstEditStaff('${s.id}')"><i class="fa-solid fa-pen"></i></button>
         <button class="btn btn-danger btn-xs" onclick="pstDeleteStaff('${s.id}')"><i class="fa-solid fa-trash"></i></button>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 function pstSaveStaff() {
   try {
     const g = id => { const el = document.getElementById(id); return el ? (el.value || '').trim() : ''; };
-    const name  = g('pstName');
-    const role  = g('pstRole');
-    const dept  = g('pstDept');
-    const tsc   = g('pstTSC');
-    const phone = g('pstPhone');
-    const email = g('pstEmail');
-    const nid   = g('pstNID');
-    const doe   = g('pstDOE');
-    const notes = g('pstNotes');
-    const editId = g('pstEditId');
+    const name     = g('pstName');
+    const role     = g('pstRole');
+    const dept     = g('pstDept');
+    const staffId  = g('pstTSC');
+    const phone    = g('pstPhone');
+    const email    = g('pstEmail');
+    const natId    = g('pstNID');
+    const joinDate = g('pstDOE');
+    const notes    = g('pstNotes');
+    const editId   = g('pstEditId');
 
     if (!name) { alert('Full name is required.'); return; }
     if (!role) { alert('Please select a role.'); return; }
 
-    let staff = loadPeopleStaff();
+    // Save to the shared staffDetails store so it is visible in Staff Details,
+    // salary dropdowns, Platform Admin, etc.
+    let data = loadStaffDetails();
 
     if (editId) {
-      const idx = staff.findIndex(s => s.id === editId);
-      if (idx > -1) staff[idx] = { ...staff[idx], name, role, dept, tsc, phone, email, nid, doe, notes };
-      else staff.push({ id: editId, name, role, dept, tsc, phone, email, nid, doe, notes });
+      const idx = data.findIndex(r => r.id === editId);
+      if (idx > -1) {
+        data[idx] = { ...data[idx], name, role, dept, staffId, phone, email, natId, joinDate, notes };
+      } else {
+        data.push({ id: editId, name, role, dept, staffId, phone, email, natId, joinDate, notes,
+          gender:'', dob:'', address:'', empType:'Permanent', contractEnd:'', status:'Active',
+          qual:'', subjects:'', ecName:'', ecPhone:'' });
+      }
     } else {
-      staff.push({ id: 'pst_' + Date.now(), name, role, dept, tsc, phone, email, nid, doe, notes });
+      data.push({
+        id: 'pst_' + Date.now(),
+        name, role, dept, staffId, phone, email, natId, joinDate, notes,
+        gender:'', dob:'', address:'', empType:'Permanent', contractEnd:'', status:'Active',
+        qual:'', subjects:'', ecName:'', ecPhone:''
+      });
     }
 
-    savePeopleStaff(staff);
+    saveStaffDetailsStorage(data);
+    populateStaffDropdowns();
+    platRenderStaffList();
+    if (typeof sdpRenderList === 'function') sdpRenderList();
     pstClearForm();
     pstPopulateDeptFilter();
     pstRenderList();
@@ -17914,39 +17938,42 @@ function pstClearForm() {
 }
 
 function pstEditStaff(id) {
-  const staff = loadPeopleStaff();
-  const s = staff.find(x => x.id === id);
+  // Read from unified staffDetails store
+  const s = loadStaffDetails().find(x => x.id === id);
   if (!s) return;
   document.getElementById('pstEditId').value = id;
-  document.getElementById('pstName').value   = s.name  || '';
-  document.getElementById('pstRole').value   = s.role  || '';
-  document.getElementById('pstDept').value   = s.dept  || '';
-  document.getElementById('pstTSC').value    = s.tsc   || '';
-  document.getElementById('pstPhone').value  = s.phone || '';
-  document.getElementById('pstEmail').value  = s.email || '';
-  document.getElementById('pstNID').value    = s.nid   || '';
-  document.getElementById('pstDOE').value    = s.doe   || '';
-  document.getElementById('pstNotes').value  = s.notes || '';
+  document.getElementById('pstName').value   = s.name     || '';
+  document.getElementById('pstRole').value   = s.role     || '';
+  document.getElementById('pstDept').value   = s.dept     || '';
+  document.getElementById('pstTSC').value    = s.staffId  || '';
+  document.getElementById('pstPhone').value  = s.phone    || '';
+  document.getElementById('pstEmail').value  = s.email    || '';
+  document.getElementById('pstNID').value    = s.natId    || '';
+  document.getElementById('pstDOE').value    = s.joinDate || '';
+  document.getElementById('pstNotes').value  = s.notes    || '';
   const title = document.getElementById('pplStFormTitle');
   if (title) title.innerHTML = '<i class="fa-solid fa-pen"></i> Edit Staff Member';
-  // Switch to add/edit tab
   openPeopleStaffTab('pplStAddEdit', document.getElementById('pstbAddEdit'));
 }
 
 function pstDeleteStaff(id) {
   if (!confirm('Delete this staff record? This cannot be undone.')) return;
-  let staff = loadPeopleStaff().filter(s => s.id !== id);
-  savePeopleStaff(staff);
+  let data = loadStaffDetails().filter(s => s.id !== id);
+  saveStaffDetailsStorage(data);
+  populateStaffDropdowns();
+  platRenderStaffList();
+  if (typeof sdpRenderList === 'function') sdpRenderList();
   pstPopulateDeptFilter();
   pstRenderList();
   showToast('Staff record deleted.');
 }
 
 function pstExportCSV() {
-  const staff = loadPeopleStaff();
+  const staff = loadStaffDetails();
   if (!staff.length) { alert('No staff records to export.'); return; }
-  const hdr = ['Name','Role','Department','TSC No.','Phone','Email','National ID','Date of Employment','Notes'];
-  const rows = staff.map(s => [s.name,s.role,s.dept,s.tsc,s.phone,s.email,s.nid,s.doe,s.notes].map(v => `"${(v||'').replace(/"/g,'""')}"`));
+  const hdr = ['Name','Role','Department','Staff ID / TSC','Phone','Email','National ID','Date Joined','Status','Notes'];
+  const rows = staff.map(s => [s.name,s.role,s.dept,s.staffId,s.phone,s.email,s.natId,s.joinDate,s.status,s.notes]
+    .map(v => `"${(v||'').replace(/"/g,'""')}"`));
   const csv = [hdr, ...rows].map(r => r.join(',')).join('\n');
   const a = document.createElement('a');
   a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
@@ -17954,10 +17981,11 @@ function pstExportCSV() {
   a.click();
 }
 
+
 // ── Roles & Departments ──
 
 function pstRenderRoles() {
-  const staff   = loadPeopleStaff();
+  const staff   = loadStaffDetails();
   const el      = document.getElementById('pstRolesContent');
   if (!el) return;
   if (!staff.length) {
@@ -18200,6 +18228,7 @@ function sdpSaveStaff() {
   sdpPopulateDropdowns();
   populateStaffDropdowns();      // keep Finances salary dropdowns in sync
   platRenderStaffList();         // keep Platform Admin table in sync
+  pstPopulateDeptFilter(); pstRenderList(); // keep People list in sync
   openSDTab('sdpList', document.getElementById('sdpbtList'));
   showToast('Staff record saved.');
 }
@@ -18216,21 +18245,10 @@ function sdpClearForm() {
 }
 
 function sdpEditStaff(id) {
-  const r = loadStaffDetails().find(x => x.id === id);
-  if (!r) return;
-  const map = { sdpEditId:id, sdpName:r.name, sdpStaffId:r.staffId, sdpNatId:r.natId,
-    sdpDOB:r.dob, sdpPhone:r.phone, sdpEmail:r.email, sdpAddress:r.address,
-    sdpRole:r.role, sdpJoinDate:r.joinDate, sdpContractEnd:r.contractEnd,
-    sdpQual:r.qual, sdpSubjects:r.subjects, sdpECName:r.ecName, sdpECPhone:r.ecPhone, sdpNotes:r.notes };
-  Object.entries(map).forEach(([k,v]) => { const el = document.getElementById(k); if (el) el.value = v||''; });
-  ['sdpGender','sdpDept','sdpEmpType','sdpStatus'].forEach(fid => {
-    const el = document.getElementById(fid);
-    const key = {sdpGender:'gender',sdpDept:'dept',sdpEmpType:'empType',sdpStatus:'status'}[fid];
-    if (el && r[key]) el.value = r[key];
-  });
-  const t = document.getElementById('sdpFormTitle');
-  if (t) t.innerHTML = `<i class="fa-solid fa-pen"></i> Edit — ${r.name}`;
-  openSDTab('sdpAdd', document.getElementById('sdpbtAdd'));
+  // Redirect to People > Staff > Edit (shared data store)
+  go('people', document.querySelector('[data-s=people]'));
+  openPeopleTab('peopleStaffPanel', document.getElementById('pmtStaff'));
+  pstEditStaff(id);
 }
 
 function sdpDeleteStaff(id) {
@@ -18238,6 +18256,7 @@ function sdpDeleteStaff(id) {
   let data = loadStaffDetails().filter(r => r.id !== id);
   saveStaffDetailsStorage(data);
   sdpRenderList(); sdpPopulateDropdowns(); populateStaffDropdowns(); platRenderStaffList();
+  pstPopulateDeptFilter(); pstRenderList(); // keep People list in sync
   showToast('Staff record deleted.');
 }
 
