@@ -9927,6 +9927,8 @@ function go(sec, el) {
   if (sec === 'fees')       { initFeesSection(); }
   if (sec === 'papers')     { initPapersSection(); }
   if (sec === 'settings')   { renderTeacherPreferences(); }
+  if (sec === 'people')     { initPeopleSection(); }
+  if (sec === 'staffdetails') { initStaffDetailsSection(); }
   if (sec === 'platform')   { renderPlatformDashboard(); _navCfgMode='global'; navCfgSwitchMode('global'); platRenderNavConfig(); platRenderLiteModeConfig(); platLoadContactInputs(); themeRenderSwatches(); /* Activate first platform tab */ openPlatTab('platTab-schools', document.querySelector('#platTabBar .plat-tab-btn')); }
   if (sec === 'livechat')   { initLiveChatSection(); }
   if (sec === 'exambuilder') { /* handled by EB module DOMContentLoaded wrapper */ }
@@ -18174,17 +18176,17 @@ function sdpRenderList() {
   if (status) data = data.filter(r => r.status === status);
   sdpRenderStats();
   if (!data.length) {
-    body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:2rem">No staff records found. Click <strong>Add Staff</strong> to get started.</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:2rem">No staff records found. Click <strong>Add Staff</strong> to get started.</td></tr>';
     return;
   }
   const sc = { Active:'#16a34a','On Leave':'#f59e0b',Resigned:'#ef4444',Retired:'#6b7280' };
   body.innerHTML = data.map((r,i) => `
     <tr>
-      <td>${i+1}</td><td>${r.staffId||'—'}</td><td><strong>${r.name}</strong></td>
-      <td>${r.role}</td><td><span class="badge">${r.dept}</span></td>
-      <td>${r.phone}</td><td>${r.email||'—'}</td><td>${r.empType}</td>
+      <td>${i+1}</td><td><strong>${r.name}</strong></td>
+      <td>${r.role||'—'}</td><td>${r.dept ? `<span class="badge">${r.dept}</span>` : '—'}</td>
+      <td>${r.phone||'—'}</td><td>${r.email||'—'}</td>
+      <td><span class="badge" style="background:${sc[r.status]||'#6b7280'};color:#fff">${r.status||'Active'}</span></td>
       <td>${r.joinDate||'—'}</td>
-      <td><span class="badge" style="background:${sc[r.status]||'#6b7280'};color:#fff">${r.status}</span></td>
       <td>
         <button class="btn btn-outline btn-xs" onclick="sdpEditStaff('${r.id}')"><i class="fa-solid fa-pen"></i></button>
         <button class="btn btn-danger btn-xs"  onclick="sdpDeleteStaff('${r.id}')"><i class="fa-solid fa-trash"></i></button>
@@ -18241,8 +18243,27 @@ function sdpClearForm() {
 }
 
 function sdpEditStaff(id) {
-  // Redirect to People > Staff > Edit (shared data store)
-  // Staff editing now handled in Staff Details section
+  const s = loadStaffDetails().find(x => x.id === id);
+  if (!s) return;
+  document.getElementById('sdpEditId').value = id;
+  ['sdpName','sdpStaffId','sdpNatId','sdpDOB','sdpPhone','sdpEmail','sdpAddress',
+   'sdpRole','sdpJoinDate','sdpContractEnd','sdpQual','sdpSubjects','sdpECName','sdpECPhone','sdpNotes']
+    .forEach(fid => {
+      const keyMap = {sdpName:'name',sdpStaffId:'staffId',sdpNatId:'natId',sdpDOB:'dob',
+        sdpPhone:'phone',sdpEmail:'email',sdpAddress:'address',sdpRole:'role',
+        sdpJoinDate:'joinDate',sdpContractEnd:'contractEnd',sdpQual:'qual',
+        sdpSubjects:'subjects',sdpECName:'ecName',sdpECPhone:'ecPhone',sdpNotes:'notes'};
+      const el = document.getElementById(fid);
+      if (el) el.value = s[keyMap[fid]] || '';
+    });
+  ['sdpGender','sdpDept','sdpEmpType','sdpStatus'].forEach(fid => {
+    const keyMap = {sdpGender:'gender',sdpDept:'dept',sdpEmpType:'empType',sdpStatus:'status'};
+    const el = document.getElementById(fid);
+    if (el && s[keyMap[fid]]) el.value = s[keyMap[fid]];
+  });
+  const t = document.getElementById('sdpFormTitle');
+  if (t) t.innerHTML = '<i class="fa-solid fa-pen"></i> Edit Staff Member';
+  openSDTab('sdpAddEdit', document.getElementById('sdpbtAddEdit'));
 }
 
 function sdpDeleteStaff(id) {
