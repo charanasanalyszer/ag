@@ -90,12 +90,31 @@ let   currentSchoolId       = null;
 const K_EXAM_DL_FEE        = 'ei_exam_dl_fee';        // number — KES fee for teacher/guest to print/download
 const K_EXAM_DL_UNLOCKED   = 'ei_exam_dl_unlocked';   // JSON array of schoolIds that have paid/been unlocked
 
+// ── Tiered fee by total marks ──────────────────────────────────────────────
+function getExamDlFeeForMarks(totalMarks) {
+  const m = totalMarks || 0;
+  if (m <= 30)  return 30;
+  if (m <= 50)  return 60;
+  if (m <= 80)  return 80;
+  if (m <= 100) return 100;
+  if (m <= 150) return 200;
+  return 1000; // 200+ marks
+}
+
 function getExamDlFee() { try { const v=localStorage.getItem(K_EXAM_DL_FEE); return v!==null?Number(v):0; } catch { return 0; } }
 function getExamDlUnlocked() { try { return JSON.parse(localStorage.getItem(K_EXAM_DL_UNLOCKED)||'[]'); } catch { return []; } }
 function isSchoolExamDlUnlocked(schoolId) {
   const fee = getExamDlFee();
   if (!fee || fee <= 0) return true; // free
   return getExamDlUnlocked().includes(schoolId);
+}
+// Per-paper unlock key: stores set of "schoolId:examTotalMarks" or "schoolId:examId" tokens that have been paid
+const K_EXAM_PAPER_UNLOCKED = 'ei_exam_paper_unlocked';
+function getPaperUnlocked() { try { return JSON.parse(localStorage.getItem(K_EXAM_PAPER_UNLOCKED)||'[]'); } catch { return []; } }
+function isPaperUnlocked(paperKey) { return getPaperUnlocked().includes(paperKey); }
+function unlockPaper(paperKey) {
+  const arr = getPaperUnlocked();
+  if (!arr.includes(paperKey)) { arr.push(paperKey); localStorage.setItem(K_EXAM_PAPER_UNLOCKED, JSON.stringify(arr)); }
 }
 
 
@@ -450,19 +469,9 @@ function resetPlatformAccount() {
   showPlatformLogin(); // re-render with first-time labels
 }
 function showUnifiedLogin() {
-  // If no schools registered yet, redirect to platform admin setup
   loadPlatform();
-  if (!platformSchools.length) {
-    showPlatformLogin();
-    const plErr = document.getElementById('plErr');
-    if (plErr) {
-      plErr.textContent = 'ℹ️ No schools registered yet. Set up your platform account first, then create a school.';
-      plErr.style.display = 'block';
-    }
-    return;
-  }
-  // Go straight to school login without showing school list
-  ['dualPortal','platformLogin','schoolSelector','app'].forEach(id => {
+  // Hide all other screens and app elements
+  ['dualPortal','platformLogin','schoolSelector','app','loginScreen'].forEach(id => {
     const el = document.getElementById(id); if (el) el.style.display = 'none';
   });
   // Hide fixed-position elements that escape parent display:none
@@ -470,13 +479,24 @@ function showUnifiedLogin() {
   const tb = document.getElementById('topbar'); if (tb) tb.style.display = 'none';
   const mbn = document.getElementById('mobileBottomNav'); if (mbn) mbn.style.display = 'none';
   const mbnR = document.getElementById('mbnRestoreTab'); if (mbnR) mbnR.style.display = 'none';
-  document.getElementById('lUser').value = '';
-  document.getElementById('lPass').value = '';
-  document.getElementById('loginErr').style.display = 'none';
-  document.getElementById('schoolLoginLabel').textContent = 'School Login';
-  // Flag that we are in direct-login mode (no pre-selected school)
+  // Flag direct-login mode (no pre-selected school)
   currentSchoolId = null;
-  document.getElementById('loginScreen').style.display = 'flex';
+  // Show the unified login form
+  const ul = document.getElementById('unifiedLogin');
+  if (ul) {
+    ul.style.display = 'flex';
+    const uniSubtitle = document.getElementById('uniSubtitle');
+    if (uniSubtitle) uniSubtitle.textContent = !platformSchools.length
+      ? 'No schools yet — log in with platform admin credentials to get started'
+      : 'School Exam Management System';
+    const u = document.getElementById('uniUser');
+    const p = document.getElementById('uniPass');
+    const err = document.getElementById('uniErr');
+    if (u) u.value = '';
+    if (p) p.value = '';
+    if (err) err.style.display = 'none';
+    setTimeout(() => { if (u) u.focus(); }, 100);
+  }
 }
 
 // ═══════════════ FORGOT PASSWORD ═══════════════
@@ -725,11 +745,6 @@ function doPlatformLogin() {
       errEl.style.display = 'block';
       return;
     }
-    // Confirm before creating — prevents accidental overwrites
-    if (!confirm(`Create a new Platform Admin account?\n\nUsername: ${u}\n\nMake sure you remember these credentials — they cannot be recovered without resetting.`)) {
-      re();
-      return;
-    }
     if (!validateUsername('platform', u)) { re(); return; }
     setPlatformCreds(u, p);
     re();
@@ -753,13 +768,17 @@ function doPlatformLogin() {
 
 // ══ UNIFIED LOGIN — single screen, password routes to platform or school ══
 function doUnifiedLogin() {
-  const u   = document.getElementById('uniUser').value.trim();
-  const p   = document.getElementById('uniPass').value;
+  const u   = (document.getElementById('uniUser')?.value || '').trim();
+  const p   = document.getElementById('uniPass')?.value || '';
   const err = document.getElementById('uniErr');
   const btn = document.getElementById('uniBtn');
-  err.style.display = 'none';
-  if (btn) { btn.disabled=true; btn.textContent='Signing in…'; }
-  const re = () => { if(btn){ btn.disabled=false; btn.innerHTML='<i class="fa-solid fa-arrow-right-to-bracket" style="margin-right:.4rem"></i>Sign In'; } };
+  if (err) err.style.display = 'none';
+  if (btn) { btn.disabled=true; btn.innerHTML='<i class="fa-solid fa-spinner fa-spin" style="margin-right:.4rem"></i>Signing in…'; }
+  const re = (msg) => {
+    if (btn) { btn.disabled=false; btn.innerHTML='<i class="fa-solid fa-arrow-right-to-bracket" style="margin-right:.4rem"></i>Sign In'; }
+    if (msg && err) { err.innerHTML='<i class="fa-solid fa-circle-xmark"></i> ' + msg; err.style.display='block'; err.scrollIntoView({behavior:'smooth',block:'nearest'}); }
+  };
+  try {
   // Helper: save credentials if "Remember me" is checked
   const maybeSaveCreds = () => {
     try {
@@ -772,23 +791,19 @@ function doUnifiedLogin() {
     } catch(e) {}
   };
 
-  if (!u || !p) { re(); err.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> Please enter your username and password.'; err.style.display='block'; return; }
+  if (!u || !p) { re('Please enter your username and password.'); return; }
 
   // ── FORMAT GATE: reject unrecognised username formats immediately ──
   const _detectedRole = detectUsernameRole(u);
   if (!_detectedRole) {
-    re();
-    err.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> Username format not recognised. Check your credentials — format should be <strong>name@schoolcode</strong> for teachers/students or <strong>name@school</strong> for school login.';
-    err.style.display = 'block';
+    re('Username format not recognised. Format: <strong>name@school</strong> for school &nbsp;|&nbsp; <strong>name@schoolcode</strong> for teacher/student');
     return;
   }
   // Validate exact pattern for known roles (skip for teacherOrStudent — resolved at lookup)
   if (_detectedRole !== 'guest' && _detectedRole !== 'teacherOrStudent') {
     const _rule = USERNAME_RULES[_detectedRole];
     if (_rule && !_rule.rx.test(u)) {
-      re();
-      err.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> Username format not recognised. ' + _rule.hint;
-      err.style.display = 'block';
+      re('Username format not recognised. ' + _rule.hint);
       return;
     }
   }
@@ -802,14 +817,13 @@ function doUnifiedLogin() {
     // Try schools first; if no match, treat as first-time platform setup
     const anySchoolMatch = platformSchools.some(s => s.username===u && s.password===p);
     if (!anySchoolMatch) {
-      if (p.length < 6) { re(); err.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> No account found. Platform password must be ≥6 chars to create.'; err.style.display='block'; return; }
-      if (!confirm('Create a new Platform Admin account?\n\nUsername: '+u+'\n\nRemember these credentials — they cannot be recovered without a reset.')) { re(); return; }
+      if (p.length < 6) { re('No account found. Platform password must be at least 6 characters.'); return; }
       // Platform admin: any alphanumeric username (no @ allowed)
-      if (u.includes('@')) { re(); err.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> Platform Admin username cannot contain @. Use a plain name like: myadmin'; err.style.display='block'; return; }
+      if (u.includes('@')) { re('Platform Admin username cannot contain @. Use a plain name like: myadmin'); return; }
       setPlatformCreds(u, p);
       re();
       maybeSaveCreds();
-      showToast('Platform account created <i class="fa-solid fa-check"></i>','success');
+      showToast('Platform admin account created successfully <i class="fa-solid fa-check"></i>','success');
       enterPlatformDashboard();
       return;
     }
@@ -824,7 +838,7 @@ function doUnifiedLogin() {
   // superadmin built-in
   if (u==='superadmin' && p==='super123') {
     currentUser = { id:'builtin', name:'Super Admin', username:'superadmin', role:'superadmin', builtin:true, canAnalyse:true, canReport:true, canMerit:true };
-    if (platformSchools.length === 0) { re(); err.innerHTML='<i class="fa-solid fa-triangle-exclamation"></i>️ No school accounts yet. Log in with your platform admin credentials to create schools first.'; err.style.display='block'; return; }
+    if (platformSchools.length === 0) { re('No school accounts yet. Log in with your platform admin credentials to create schools first.'); return; }
     // go to first school or school selector — use school selector via legacy path
     re();
     maybeSaveCreds();
@@ -839,13 +853,12 @@ function doUnifiedLogin() {
   for (const school of platformSchools) {
     if (school.active === false) {
       if (school.username===u && school.password===p) {
-        re(); const msg=school.deactivationMessage||'This school account has been suspended.';
-        err.innerHTML='<i class="fa-solid fa-lock"></i> <strong>Account Suspended:</strong> '+msg; err.style.display='block'; return;
+        re('<strong>Account Suspended:</strong> ' + (school.deactivationMessage||'This school account has been suspended.')); return;
       }
       // also check admins/teachers in suspended school — block them too
       loadSchoolContext(school);
       const matchInSuspended = admins.find(a=>a.username===u&&a.password===p) || teachers.find(t=>t.username===u&&t.password===p);
-      if (matchInSuspended) { re(); const msg=school.deactivationMessage||'This school account has been suspended.'; err.innerHTML='<i class="fa-solid fa-lock"></i> <strong>Account Suspended:</strong> '+msg; err.style.display='block'; return; }
+      if (matchInSuspended) { re('<strong>Account Suspended:</strong> ' + (school.deactivationMessage||'This school account has been suspended.')); return; }
       currentSchoolId = null; continue;
     }
     if (school.username===u && school.password===p) {
@@ -858,6 +871,19 @@ function doUnifiedLogin() {
     if (admin) { currentUser={...admin,canAnalyse:true,canReport:true,canMerit:true}; re(); maybeSaveCreds(); finishLogin(school); return; }
     const teacher = teachers.find(t=>t.username===u&&t.password===p);
     if (teacher) { currentUser={username:teacher.username,role:'teacher',name:teacher.name,teacherId:teacher.id,canAnalyse:teacher.canAnalyse,canReport:teacher.canReport,canMerit:teacher.canMerit}; re(); maybeSaveCreds(); finishLogin(school); return; }
+
+    // ── Staff Payslip Portal login: staffId as username, natId (or staffId) as password ──
+    const staffList = JSON.parse(localStorage.getItem(staffDetailsKey()) || '[]');
+    const staffMatch = staffList.find(s => {
+      const uMatch = (s.staffId || '').toLowerCase() === u.toLowerCase();
+      if (!uMatch) return false;
+      const pwd = (s.natId || s.staffId || '').toString().trim();
+      return pwd && pwd === p;
+    });
+    if (staffMatch) {
+      currentUser = { username: staffMatch.staffId, role: 'staff_payslip', name: staffMatch.name, staffRecordId: staffMatch.id, staffId: staffMatch.staffId, dept: staffMatch.dept || '', jobRole: staffMatch.role || '', canAnalyse: false, canReport: false, canMerit: false };
+      re(); maybeSaveCreds(); finishStaffPayslipPortal(school); return;
+    }
 
     // ── Student login: admNo@schoolcode  e.g. 2024001@sunrise ──
     const atIdx = u.indexOf('@');
@@ -876,7 +902,7 @@ function doUnifiedLogin() {
             currentUser = { username: u, role:'student', name: stuMatch.name, studentId: stuMatch.id, adm: stuMatch.adm, canAnalyse:false, canReport:false, canMerit:false };
             re(); maybeSaveCreds(); finishStudentPortal(school); return;
           } else {
-            re(); err.innerHTML='<i class="fa-solid fa-circle-xmark"></i> Incorrect password for student account.'; err.style.display='block'; return;
+            re('Incorrect password for student account.'); return;
           }
         }
       }
@@ -895,12 +921,14 @@ function doUnifiedLogin() {
 
   // Guest login fallback (no school loop needed if no schools)
   if (u.toLowerCase() === 'guest' && p === 'guest') {
-    re(); err.innerHTML='<i class="fa-solid fa-circle-xmark"></i> No schools found. Platform admin must add a school first.'; err.style.display='block'; return;
+    re('No schools found. Platform admin must add a school first.'); return;
   }
 
-  re();
-  err.innerHTML='<i class="fa-solid fa-circle-xmark"></i> Invalid credentials. Check your username and password (case-sensitive).';
-  err.style.display='block';
+    re('Invalid credentials. Check your username and password (case-sensitive).');
+  } catch(e) {
+    console.error('doUnifiedLogin error:', e);
+    re('Something went wrong during sign-in. Please refresh and try again. (' + (e.message||'unknown error') + ')');
+  }
 }
 
 // ══════════════════════════════════════════════
@@ -943,7 +971,7 @@ function spLoadExamFilter() {
     return mks.length > 0;
   });
   sel.innerHTML = '<option value="">All Exams</option>' +
-    myExams.map(e => `<option value="${e.id}">${e.title} — ${e.term} ${e.year||''}</option>`).join('');
+    myExams.map(e => `<option value="${e.id}">${e.name || e.title || e.id} — ${e.term} ${e.year||''}</option>`).join('');
 }
 
 function spRenderResults() {
@@ -972,9 +1000,12 @@ function spRenderResults() {
   let html = '';
   Object.entries(byExam).forEach(([examId, mks]) => {
     const ex = exams.find(e => e.id === examId);
-    const title = ex ? `${ex.title} — ${ex.term||''} ${ex.year||''}` : examId;
+    const title = ex ? `${ex.name || ex.title || examId} — ${ex.term||''} ${ex.year||''}` : examId;
     const total = mks.reduce((s,m) => s + (Number(m.score)||0), 0);
-    const maxTotal = mks.length * (ex?.maxScore || 100);
+    const maxTotal = mks.reduce((s,m) => {
+      const sub = subjects.find(su => su.id === m.subjectId);
+      return s + (ex?.maxScore || (sub?.max) || 100);
+    }, 0);
     const pct = maxTotal > 0 ? Math.round(total/maxTotal*100) : 0;
     const gradingSystem = ex?.gradingSystemId ? gradingSystems?.find(g=>g.id===ex.gradingSystemId) : null;
     html += `<div style="border:1.5px solid var(--border);border-radius:12px;margin-bottom:1rem;overflow:hidden">
@@ -995,7 +1026,7 @@ function spRenderResults() {
       const sub = subjects.find(s => s.id === m.subjectId);
       const subName = sub ? sub.name : (m.subject||'—');
       const score = Number(m.score)||0;
-      const maxS  = Number(ex?.maxScore||100);
+      const maxS  = Number(ex?.maxScore || sub?.max || 100);
       const sp2   = maxS > 0 ? Math.round(score/maxS*100) : 0;
       let gradeInfo = getGrade ? getGrade(score, maxS, gradingSystem) : {grade:'—',remark:'—'};
       if (typeof gradeInfo === 'string') gradeInfo = {grade:gradeInfo, remark:''};
@@ -1036,15 +1067,17 @@ function spRenderFees() {
   const curRec    = stuRecords.find(r => r.term === curTerm && String(r.year) === curYear);
   const curTotal  = curRec ? parseFloat(curRec.totalFee || 0) : 0;
   const curPaid   = curRec ? (curRec.payments || []).reduce((s, p) => s + parseFloat(p.amount || 0), 0) : 0;
-  const curBalance = curTotal - curPaid;
+  const prevBalance = getPreviousBalance(stuId, curTerm, curYear);
+  const curBalance = prevBalance + curTotal - curPaid;
   const balColor  = curBalance > 0 ? '#ef4444' : '#10b981';
 
   let html = `<div style="background:linear-gradient(135deg,${balColor}12,${balColor}06);border:2px solid ${balColor}40;border-radius:12px;padding:1rem 1.25rem;margin-bottom:1.25rem">
     <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:.4rem">Current Term — ${curTerm} ${curYear}</div>
     <div style="display:flex;gap:1.5rem;flex-wrap:wrap">
-      <div><div style="font-size:.75rem;color:var(--muted)">Required</div><div style="font-weight:800;font-size:1.1rem">KES ${curTotal.toLocaleString()}</div></div>
+      ${prevBalance > 0 ? `<div><div style="font-size:.75rem;color:var(--muted)">Previous Balance</div><div style="font-weight:800;font-size:1.1rem;color:#ef4444">KES ${prevBalance.toLocaleString()}</div></div>` : ''}
+      <div><div style="font-size:.75rem;color:var(--muted)">This Term's Fees</div><div style="font-weight:800;font-size:1.1rem">KES ${curTotal.toLocaleString()}</div></div>
       <div><div style="font-size:.75rem;color:var(--muted)">Paid</div><div style="font-weight:800;font-size:1.1rem;color:#10b981">KES ${curPaid.toLocaleString()}</div></div>
-      <div><div style="font-size:.75rem;color:var(--muted)">Balance</div><div style="font-weight:800;font-size:1.1rem;color:${balColor}">KES ${Math.abs(curBalance).toLocaleString()} ${curBalance <= 0 ? '<i class="fa-solid fa-circle-check"></i> CLEARED' : '<i class="fa-solid fa-triangle-exclamation"></i>️ OWING'}</div></div>
+      <div><div style="font-size:.75rem;color:var(--muted)">Cumulative</div><div style="font-weight:800;font-size:1.1rem;color:${balColor}">KES ${Math.abs(curBalance).toLocaleString()} ${curBalance <= 0 ? '<i class="fa-solid fa-circle-check"></i> CLEARED' : '<i class="fa-solid fa-triangle-exclamation"></i>️ OWING'}</div></div>
     </div>
   </div>`;
 
@@ -1082,6 +1115,288 @@ function spRenderFees() {
   body.innerHTML = html;
 }
 
+// ── Student Portal: build fee statement data for current student ──
+function spBuildFeeStatementData() {
+  loadFees();
+  const stuId = currentUser && currentUser.studentId;
+  const stu   = stuId && students.find(s => s.id === stuId);
+  if (!stu) return null;
+  const cls   = classes.find(c => c.id === stu.classId);
+  const stuRecords = feeRecords.filter(r => r.studentId === stuId);
+
+  // Build per-term rows
+  const rows = [];
+  stuRecords.forEach(rec => {
+    const paid    = getRecordTotalPaid(rec);
+    const termBal = getRecordBalance(rec);
+    const prevBal = getPreviousBalance(stuId, rec.term, rec.year);
+    const bal     = prevBal + termBal;
+    const status  = bal <= 0 ? 'Cleared' : paid > 0 ? 'Partial' : 'Unpaid';
+    const payments = (rec.payments || []).map(p => ({
+      date:      p.date || '—',
+      amount:    parseFloat(p.amount) || 0,
+      mode:      p.mode  || 'Cash',
+      receiptNo: p.receiptNo || p.ref || '—',
+      notes:     p.notes || ''
+    }));
+    rows.push({
+      term:      rec.term,
+      year:      rec.year,
+      totalFee:  parseFloat(rec.totalFee || 0),
+      prevBal,
+      paid,
+      balance:   bal,
+      status,
+      payments
+    });
+  });
+  rows.sort((a, b) => {
+    const termOrder = { 'Term 1': 1, 'Term 2': 2, 'Term 3': 3 };
+    if (String(a.year) !== String(b.year)) return String(a.year).localeCompare(String(b.year));
+    return (termOrder[a.term] || 0) - (termOrder[b.term] || 0);
+  });
+
+  const totalBilled  = rows.reduce((s, r) => s + r.totalFee, 0);
+  const totalPaid    = rows.reduce((s, r) => s + r.paid,     0);
+  const totalBalance = rows.length > 0 ? rows[rows.length - 1].balance : 0;
+
+  return {
+    student:      stu,
+    className:    cls ? cls.name : (stu.className || '—'),
+    schoolName:   (settings && settings.schoolName) ? settings.schoolName : 'School',
+    schoolMotto:  (settings && settings.motto)      ? settings.motto      : '',
+    rows,
+    totalBilled,
+    totalPaid,
+    totalBalance,
+    generatedOn:  new Date().toLocaleDateString('en-KE', { day: '2-digit', month: 'long', year: 'numeric' })
+  };
+}
+
+// ── Student Portal: download fee statement as PDF ──
+function spDownloadFeeStatement() {
+  const d = spBuildFeeStatementData();
+  if (!d) { showToast('No fee records found for your account.', 'error'); return; }
+  if (!d.rows.length) { showToast('No fee records available to generate a statement.', 'info'); return; }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  _spRenderFeeStatementPDF(doc, d);
+  const fname = `Fee_Statement_${d.student.adm || d.student.name.replace(/\s+/g,'_')}.pdf`;
+  doc.save(fname);
+  showToast('Fee statement downloaded <i class="fa-solid fa-check"></i>', 'success');
+}
+
+// ── Student Portal: print fee statement ──
+function spPrintFeeStatement() {
+  const d = spBuildFeeStatementData();
+  if (!d) { showToast('No fee records found for your account.', 'error'); return; }
+  if (!d.rows.length) { showToast('No fee records available to generate a statement.', 'info'); return; }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  _spRenderFeeStatementPDF(doc, d);
+  const blobUrl = doc.output('bloburl');
+  const win = window.open(blobUrl, '_blank');
+  if (win) { win.onload = () => { try { win.print(); } catch(e){} }; }
+  else { showToast('Please allow pop-ups to print, or use Download instead.', 'info'); }
+}
+
+// ── Internal: render fee statement into a jsPDF doc ──
+function _spRenderFeeStatementPDF(doc, d) {
+  const W = 210, margin = 14;
+  const blue   = [37, 99, 235];
+  const green  = [22, 163, 74];
+  const red    = [220, 38, 38];
+  const amber  = [202, 138, 4];
+  const dark   = [15, 23, 42];
+  const muted  = [100, 116, 139];
+
+  // ── Header band ──
+  doc.setFillColor(...blue);
+  doc.rect(0, 0, W, 32, 'F');
+
+  // School name
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(15);
+  doc.setFont(undefined, 'bold');
+  doc.text(d.schoolName.toUpperCase(), margin, 12);
+
+  // Motto (if any)
+  if (d.schoolMotto) {
+    doc.setFontSize(8);
+    doc.setFont(undefined, 'italic');
+    doc.setTextColor(200, 220, 255);
+    doc.text(d.schoolMotto, margin, 18);
+  }
+
+  // Statement title aligned right
+  doc.setFontSize(9);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text('SCHOOL FEES STATEMENT', W - margin, 12, { align: 'right' });
+  doc.setFontSize(7.5);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(200, 220, 255);
+  doc.text(`Generated: ${d.generatedOn}`, W - margin, 18, { align: 'right' });
+
+  // ── Student info box ──
+  let y = 38;
+  doc.setFillColor(241, 245, 249);
+  doc.roundedRect(margin, y, W - margin * 2, 22, 3, 3, 'F');
+  doc.setFontSize(8);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(...dark);
+  doc.text('STUDENT DETAILS', margin + 4, y + 5);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(...muted);
+  doc.text(`Name:`, margin + 4, y + 11);
+  doc.text(`Adm No:`, margin + 4, y + 16.5);
+  doc.text(`Class:`, margin + 80, y + 11);
+  doc.text(`Statement Date:`, margin + 80, y + 16.5);
+  doc.setTextColor(...dark);
+  doc.setFont(undefined, 'bold');
+  doc.text(d.student.name || '—', margin + 22, y + 11);
+  doc.text(d.student.adm  || '—', margin + 22, y + 16.5);
+  doc.text(d.className,            margin + 96, y + 11);
+  doc.text(d.generatedOn,          margin + 96, y + 16.5);
+
+  // ── Summary cards ──
+  y += 28;
+  const cardW = (W - margin * 2 - 6) / 3;
+  const cardH = 17;
+  // Billed
+  doc.setFillColor(239, 246, 255);
+  doc.roundedRect(margin, y, cardW, cardH, 3, 3, 'F');
+  doc.setFontSize(7);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(...muted);
+  doc.text('TOTAL BILLED', margin + 3, y + 5.5);
+  doc.setFontSize(10);
+  doc.setTextColor(...blue);
+  doc.text(`KES ${d.totalBilled.toLocaleString()}`, margin + 3, y + 13);
+  // Paid
+  const cx2 = margin + cardW + 3;
+  doc.setFillColor(240, 253, 244);
+  doc.roundedRect(cx2, y, cardW, cardH, 3, 3, 'F');
+  doc.setFontSize(7);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(...muted);
+  doc.text('TOTAL PAID', cx2 + 3, y + 5.5);
+  doc.setFontSize(10);
+  doc.setTextColor(...green);
+  doc.text(`KES ${d.totalPaid.toLocaleString()}`, cx2 + 3, y + 13);
+  // Balance
+  const cx3 = margin + (cardW + 3) * 2;
+  const balColor = d.totalBalance <= 0 ? green : red;
+  doc.setFillColor(d.totalBalance <= 0 ? 240 : 254, d.totalBalance <= 0 ? 253 : 242, d.totalBalance <= 0 ? 244 : 242);
+  doc.roundedRect(cx3, y, cardW, cardH, 3, 3, 'F');
+  doc.setFontSize(7);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(...muted);
+  doc.text('CUMULATIVE', cx3 + 3, y + 5.5);
+  doc.setFontSize(10);
+  doc.setTextColor(...balColor);
+  doc.text(`KES ${Math.abs(d.totalBalance).toLocaleString()}${d.totalBalance <= 0 ? ' ✓' : ''}`, cx3 + 3, y + 13);
+
+  // ── Term-by-term table ──
+  y += cardH + 6;
+  doc.setFontSize(8.5);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(...dark);
+  doc.text('TERM SUMMARY', margin, y);
+  y += 3;
+
+  doc.autoTable({
+    startY: y,
+    head: [['Term', 'Year', 'Prev. Bal (KES)', 'This Term Fee (KES)', 'Paid (KES)', 'Cumulative (KES)', 'Status']],
+    body: d.rows.map(r => [
+      r.term,
+      String(r.year),
+      r.prevBal > 0 ? r.prevBal.toLocaleString() : '—',
+      r.totalFee.toLocaleString(),
+      r.paid.toLocaleString(),
+      Math.abs(r.balance).toLocaleString() + (r.balance < 0 ? ' (OVP)' : ''),
+      r.status
+    ]),
+    theme: 'grid',
+    headStyles: { fillColor: blue, textColor: 255, fontStyle: 'bold', fontSize: 7.5, cellPadding: 2.5 },
+    bodyStyles: { fontSize: 7.5, cellPadding: 2 },
+    columnStyles: {
+      2: { halign: 'right', textColor: [220, 38, 38] },
+      3: { halign: 'right' },
+      4: { halign: 'right', textColor: [22, 163, 74] },
+      5: { halign: 'right' },
+      6: { fontStyle: 'bold' }
+    },
+    didParseCell: data => {
+      if (data.section === 'body' && data.column.index === 6) {
+        const v = data.cell.raw;
+        if (v === 'Cleared')     data.cell.styles.textColor = green;
+        else if (v === 'Partial') data.cell.styles.textColor = amber;
+        else                     data.cell.styles.textColor = red;
+      }
+    },
+    margin: { left: margin, right: margin }
+  });
+
+  // ── Payment history table ──
+  const allPayments = [];
+  d.rows.forEach(r => {
+    r.payments.forEach(p => allPayments.push({ ...p, term: r.term, year: r.year }));
+  });
+
+  if (allPayments.length) {
+    let py = doc.lastAutoTable.finalY + 7;
+    // check if there's room; if not add a page
+    if (py > 240) { doc.addPage(); py = 20; }
+
+    doc.setFontSize(8.5);
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(...dark);
+    doc.text('PAYMENT HISTORY', margin, py);
+    py += 3;
+
+    allPayments.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    doc.autoTable({
+      startY: py,
+      head: [['Date', 'Term / Year', 'Amount (KES)', 'Mode', 'Receipt / Ref', 'Notes']],
+      body: allPayments.map(p => [
+        p.date,
+        `${p.term} ${p.year}`,
+        p.amount.toLocaleString(),
+        p.mode,
+        p.receiptNo,
+        p.notes || '—'
+      ]),
+      theme: 'striped',
+      headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: 'bold', fontSize: 7.5, cellPadding: 2 },
+      bodyStyles: { fontSize: 7.5, cellPadding: 1.8 },
+      columnStyles: {
+        2: { halign: 'right', fontStyle: 'bold', textColor: green }
+      },
+      margin: { left: margin, right: margin }
+    });
+  }
+
+  // ── Footer ──
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(7);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(...muted);
+    doc.text(
+      `${d.schoolName}  •  This is an official fees statement.  •  Page ${i} of ${pageCount}`,
+      W / 2, 292, { align: 'center' }
+    );
+    doc.setDrawColor(...muted);
+    doc.setLineWidth(0.3);
+    doc.line(margin, 288, W - margin, 288);
+  }
+}
+
 function spRenderPapers() {
   const body = document.getElementById('spPapersBody'); if (!body) return;
   loadTermlyPapers();
@@ -1111,6 +1426,485 @@ function spRenderPapers() {
   });
   html += '</div>';
   body.innerHTML = html;
+}
+
+// ══════════════════════════════════════════════
+//   STAFF PAYSLIP PORTAL
+// ══════════════════════════════════════════════
+function finishStaffPayslipPortal(school) {
+  saveSession();
+  const ul = document.getElementById('unifiedLogin'); if (ul) ul.style.display = 'none';
+  const app = document.getElementById('app'); if (app) app.style.display = 'none';
+  const portal = document.getElementById('staffPayslipPortal');
+  if (!portal) { finishLogin(school); return; } // fallback
+  portal.style.display = 'block';
+  if (localStorage.getItem('ei_dark') === '1') applyDark(true);
+
+  // Populate header & badge
+  document.getElementById('sppStaffName').textContent = currentUser.name || 'Staff Member';
+  document.getElementById('sppStaffRole').textContent = currentUser.jobRole || '—';
+  document.getElementById('sppStaffId').textContent   = currentUser.staffId  || '—';
+  document.getElementById('sppSchoolBadge').textContent = school.name || '';
+
+  // Populate year dropdown
+  const yearSel = document.getElementById('sppYear');
+  if (yearSel) {
+    const cur = new Date().getFullYear();
+    yearSel.innerHTML = '';
+    for (let y = cur; y >= cur - 5; y--) {
+      const o = document.createElement('option'); o.value = o.textContent = y; yearSel.appendChild(o);
+    }
+  }
+  // Pre-select current month
+  const monthSel = document.getElementById('sppMonth');
+  if (monthSel) {
+    const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    monthSel.value = months[new Date().getMonth()];
+  }
+
+  // Load salary summary cards
+  sppLoadSummaryCards();
+  // Load details tab
+  sppRenderDetails();
+  // Load history
+  sppRenderHistory();
+  // Auto-preview payslip for current month — delay slightly so deferred jsPDF is ready
+  setTimeout(sppPreviewPayslip, 300);
+}
+
+// ── Helper: normalise a month name to a 2-digit number string ("January" → "01") ──
+function _sppMonthNum(name) {
+  const idx = ['january','february','march','april','may','june',
+                'july','august','september','october','november','december']
+                .indexOf((name||'').toLowerCase().trim());
+  return idx >= 0 ? String(idx + 1).padStart(2, '0') : null;
+}
+
+// ── Helper: find a payroll record from charanas_payroll matching staffId + month + year ──
+// period field is free-text, so we try multiple formats
+function _sppFindPayrollRecord(staffId, month, year) {
+  const payroll = JSON.parse(localStorage.getItem('charanas_payroll') || '[]');
+  const mNum = _sppMonthNum(month);
+  const yStr = String(year);
+  return payroll.find(r => {
+    if (r.staffId !== staffId) return false;
+    const p = (r.period || '').toLowerCase().trim();
+    if (!p) return false;
+    // Match "YYYY-MM"
+    if (mNum && p === `${yStr}-${mNum}`) return true;
+    // Match "MM/YYYY" or "MM-YYYY"
+    if (mNum && (p === `${mNum}/${yStr}` || p === `${mNum}-${yStr}`)) return true;
+    // Match "January 2025" or "Jan 2025"
+    if (p.includes(yStr) && p.includes((month||'').toLowerCase().slice(0,3))) return true;
+    return false;
+  }) || null;
+}
+
+// ── Helper: get the best available pay data for a staff member / period ──
+// Returns a normalised record: { name, role, type, staffId, basic, allow, nhif, nssf, deduct, net, source }
+function _sppGetPayData(staffId, month, year) {
+  // Salary records are stored using s.id (internal record ID) as staffId,
+  // but currentUser.staffId is the actual Staff ID field (e.g. "001").
+  // Resolve both so we can match either way.
+  const staffDetails = JSON.parse(localStorage.getItem(staffDetailsKey()) || '[]');
+  const staffRec = staffDetails.find(s =>
+    (s.staffId || '').toLowerCase() === (staffId || '').toLowerCase() ||
+    s.id === staffId
+  );
+  const internalId = staffRec ? staffRec.id : null;
+
+  // 1. Try actual payroll run record (may use either ID)
+  const pr = _sppFindPayrollRecord(staffId, month, year) ||
+             (internalId && internalId !== staffId ? _sppFindPayrollRecord(internalId, month, year) : null);
+  if (pr) {
+    const basic  = Number(pr.basic      || 0);
+    const allow  = Number(pr.allowances || 0);
+    const deduct = Number(pr.deductions || 0);
+    const net    = basic + allow - deduct;
+    return { name: pr.staffName, role: pr.role || currentUser.jobRole || '—',
+             type: '—', staffId, basic, allow, nhif: 0, nssf: 0, deduct, net,
+             status: pr.status || '', source: 'payroll' };
+  }
+  // 2. Fall back to static salary record — match by staffId or internal id
+  const salaries = JSON.parse(localStorage.getItem('charanas_staffSalaries') || '[]');
+  const rec = salaries.find(r =>
+    r.staffId === staffId ||
+    (internalId && r.staffId === internalId)
+  );
+  if (rec) {
+    return { name: rec.name, role: rec.role || currentUser.jobRole || '—',
+             type: rec.type || '—', staffId, basic: Number(rec.basic||0),
+             allow: Number(rec.allow||0), nhif: Number(rec.nhif||0),
+             nssf: Number(rec.nssf||0), deduct: Number(rec.deduct||0),
+             net: Number(rec.net||0), status: '', source: 'salary' };
+  }
+  // 3. Fall back to admin-generated payslip history (has full breakdown if saved via new previewPayslip)
+  const pHistory = JSON.parse(localStorage.getItem('charanas_payslipHistory') || '[]');
+  const ph = pHistory.find(h =>
+    (h.staffId === staffId || (internalId && h.staffId === internalId)) &&
+    h.month === month && h.year === String(year) && h.basic != null
+  );
+  if (ph) {
+    return { name: ph.name, role: ph.role || '—', type: ph.type || '—', staffId,
+             basic: Number(ph.basic||0), allow: Number(ph.allow||0), nhif: Number(ph.nhif||0),
+             nssf: Number(ph.nssf||0), deduct: Number(ph.deduct||0), net: Number(ph.net||0),
+             status: '', source: 'salary' };
+  }
+  return null;
+}
+
+// ── Helper: get the school name ──
+function _sppSchoolName() {
+  if (typeof currentSchoolId !== 'undefined' && currentSchoolId) {
+    const schools = JSON.parse(localStorage.getItem('ei_platform_schools') || '[]');
+    const s = schools.find(x => x.id === currentSchoolId);
+    if (s && s.name) return s.name;
+  }
+  return localStorage.getItem('charanas_schoolName') || (settings && settings.schoolName) || 'School';
+}
+
+// ── Helper: build a jsPDF payslip document ──
+function _sppBuildPDF(month, year, pay, school) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const W = 210, M = 18;
+  const purple = [124, 58, 237];
+  const dark   = [15, 23, 42];
+  const muted  = [100, 116, 139];
+  const green  = [16, 163, 74];
+  const red    = [220, 38, 38];
+  const fmt    = v => Number(v || 0).toLocaleString();
+
+  // ── Header band ──
+  doc.setFillColor(...purple);
+  doc.rect(0, 0, W, 34, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(15);
+  doc.setFont(undefined, 'bold');
+  doc.text(school.toUpperCase(), M, 13);
+  doc.setFontSize(9);
+  doc.setFont(undefined, 'bold');
+  doc.text('PAYSLIP', W - M, 11, { align: 'right' });
+  doc.setFontSize(11);
+  doc.text(`${(month||'').toUpperCase()} ${year}`, W - M, 19, { align: 'right' });
+  doc.setFontSize(7.5);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(200, 180, 255);
+  const today = new Date().toLocaleDateString('en-KE', { day: '2-digit', month: 'long', year: 'numeric' });
+  doc.text(`Generated: ${today}`, M, 28);
+  if (pay.source === 'payroll' && pay.status) {
+    doc.text(`Status: ${pay.status}`, W - M, 28, { align: 'right' });
+  }
+
+  // ── Employee info box ──
+  let y = 40;
+  doc.setFillColor(245, 243, 255);
+  doc.roundedRect(M, y, W - M * 2, 24, 3, 3, 'F');
+  doc.setFontSize(7);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(...muted);
+  doc.text('EMPLOYEE DETAILS', M + 4, y + 5);
+  doc.setTextColor(...dark);
+  const col2 = M + (W - M * 2) / 2 + 2;
+  const lbl = (label, val, cx, cy) => {
+    doc.setFont(undefined, 'normal'); doc.setTextColor(...muted);
+    doc.text(label + ':', cx, cy);
+    doc.setFont(undefined, 'bold'); doc.setTextColor(...dark);
+    doc.text(String(val || '—'), cx + 26, cy);
+  };
+  lbl('Name',       pay.name,                     M + 4,  y + 11);
+  lbl('Role',       pay.role,                     col2,   y + 11);
+  lbl('Staff ID',   currentUser.staffId || '—',   M + 4,  y + 17);
+  lbl('Type',       pay.type,                     col2,   y + 17);
+
+  // ── Earnings & Deductions table ──
+  y += 30;
+  doc.setFontSize(8.5);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(...dark);
+  doc.text('EARNINGS & DEDUCTIONS', M, y);
+  y += 3;
+
+  const rows = [
+    ['Basic Salary',      fmt(pay.basic),         'earn'],
+    ['Allowances',        fmt(pay.allow),         'earn'],
+  ];
+  // Only show nhif/nssf if source is salary (has breakdown) or values > 0
+  if (pay.nhif > 0)  rows.push(['SHA',              '- ' + fmt(pay.nhif),   'deduct']);
+  if (pay.nssf > 0)  rows.push(['NSSF',             '- ' + fmt(pay.nssf),   'deduct']);
+  if (pay.deduct > 0) rows.push(['Other Deductions', '- ' + fmt(pay.source === 'salary' ? pay.deduct : pay.deduct - pay.nhif - pay.nssf), 'deduct']);
+  if (pay.source === 'payroll' && pay.nhif === 0 && pay.nssf === 0 && pay.deduct > 0) {
+    // payroll source: only one combined deductions line
+    rows.pop();
+    rows.push(['Total Deductions', '- ' + fmt(pay.deduct), 'deduct']);
+  }
+
+  doc.autoTable({
+    startY: y,
+    head: [['Description', 'Amount (KES)']],
+    body: rows.map(r => [r[0], r[1]]),
+    theme: 'grid',
+    headStyles: { fillColor: purple, textColor: 255, fontStyle: 'bold', fontSize: 8, cellPadding: 2.5 },
+    bodyStyles: { fontSize: 8.5, cellPadding: 2.5 },
+    columnStyles: { 1: { halign: 'right', fontStyle: 'bold' } },
+    didParseCell: data => {
+      if (data.section === 'body') {
+        const type = rows[data.row.index]?.[2];
+        if (type === 'earn')   data.cell.styles.textColor = [15, 23, 42];
+        if (type === 'deduct') data.cell.styles.textColor = red;
+      }
+    },
+    margin: { left: M, right: M }
+  });
+
+  // ── Net Pay band ──
+  const fy = doc.lastAutoTable.finalY + 4;
+  doc.setFillColor(...purple);
+  doc.roundedRect(M, fy, W - M * 2, 16, 3, 3, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(9);
+  doc.setFont(undefined, 'bold');
+  doc.text('NET PAY', M + 5, fy + 6.5);
+  doc.setFontSize(13);
+  doc.text(`KES ${fmt(pay.net)}`, W - M - 5, fy + 9, { align: 'right' });
+
+  // ── Pay period summary below net ──
+  const sy = fy + 22;
+  doc.setFontSize(7.5);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(...muted);
+  doc.text(`Pay Period: ${month} ${year}`, M, sy);
+  doc.text(`Data source: ${pay.source === 'payroll' ? 'Payroll Run Record' : 'Staff Salary Structure'}`, W - M, sy, { align: 'right' });
+
+  // ── Footer ──
+  doc.setFontSize(7);
+  doc.setTextColor(...muted);
+  doc.setDrawColor(...muted);
+  doc.setLineWidth(0.3);
+  doc.line(M, 285, W - M, 285);
+  doc.text(`${school}  •  Official Payslip  •  ${month} ${year}`, W / 2, 289, { align: 'center' });
+
+  return doc;
+}
+
+function sppLoadSummaryCards() {
+  if (!currentUser || currentUser.role !== 'staff_payslip') return;
+  const month = document.getElementById('sppMonth')?.value ||
+    ['January','February','March','April','May','June','July','August','September','October','November','December'][new Date().getMonth()];
+  const year  = document.getElementById('sppYear')?.value  || String(new Date().getFullYear());
+  const pay   = _sppGetPayData(currentUser.staffId, month, year);
+  const fmt   = v => 'KES ' + (Number(v) || 0).toLocaleString();
+  document.getElementById('sppBasic').textContent  = pay ? fmt(pay.basic) : '—';
+  document.getElementById('sppAllow').textContent  = pay ? fmt(pay.allow) : '—';
+  const totalDeduct = pay ? (pay.nhif + pay.nssf + pay.deduct) : 0;
+  document.getElementById('sppDeduct').textContent = pay ? fmt(totalDeduct) : '—';
+  document.getElementById('sppNet').textContent    = pay ? fmt(pay.net)    : '—';
+}
+
+function sppOpenTab(tabId, btn) {
+  ['sppCurrent','sppHistory','sppDetails'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.style.display = id === tabId ? '' : 'none'; }
+  });
+  document.querySelectorAll('#staffPayslipPortal .tb').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (tabId === 'sppHistory') sppRenderHistory();
+  if (tabId === 'sppDetails') sppRenderDetails();
+}
+
+function sppPreviewPayslip() {
+  if (!currentUser || currentUser.role !== 'staff_payslip') return;
+  const month = document.getElementById('sppMonth')?.value || '';
+  const year  = document.getElementById('sppYear')?.value  || '';
+  const area  = document.getElementById('sppPreviewArea');
+  if (!area) return;
+
+  area.innerHTML = '<div style="color:var(--muted);font-size:.85rem;padding:1rem 0"><i class="fa-solid fa-spinner fa-spin" style="margin-right:.5rem"></i>Loading payslip…</div>';
+
+  const pay = _sppGetPayData(currentUser.staffId, month, year);
+  if (!pay) {
+    area.innerHTML = `<div style="color:var(--muted);padding:1.5rem;text-align:center">
+      <i class="fa-solid fa-triangle-exclamation" style="color:#f59e0b;font-size:1.5rem;display:block;margin-bottom:.6rem"></i>
+      <strong>No salary record found for ${month} ${year}.</strong><br>
+      <span style="font-size:.82rem">Please contact the administrator to set up your salary record.</span>
+    </div>`;
+    return;
+  }
+
+  // Build and embed the PDF payslip as an iframe — staff sees the actual document
+  const school = _sppSchoolName();
+  try {
+    const doc = _sppBuildPDF(month, year, pay, school);
+    const blobUrl = doc.output('bloburl');
+    area.innerHTML = `
+      <iframe src="${blobUrl}" style="width:100%;min-height:680px;border:none;border-radius:8px;display:block" title="Payslip ${month} ${year}"></iframe>
+      <div style="display:flex;gap:.65rem;justify-content:flex-end;margin-top:.85rem;flex-wrap:wrap">
+        <button onclick="sppDownloadPayslip()" class="btn btn-primary" style="gap:.4rem">
+          <i class="fa-solid fa-download"></i> Download Payslip (PDF)
+        </button>
+        <button onclick="sppPrintPayslip()" class="btn btn-outline">
+          <i class="fa-solid fa-print"></i> Print
+        </button>
+      </div>`;
+  } catch(e) {
+    // jsPDF not ready yet — fall back to styled HTML payslip
+    const fmt = v => Number(v || 0).toLocaleString();
+    let deductRows = '';
+    if (pay.source === 'salary') {
+      deductRows = `
+        <tr style="background:#fef2f2"><td style="padding:.45rem .75rem;border:1px solid #e2e8f0;color:#dc2626">SHA</td><td style="padding:.45rem .75rem;text-align:right;border:1px solid #e2e8f0;color:#dc2626">- KES ${fmt(pay.nhif)}</td></tr>
+        <tr style="background:#fef2f2"><td style="padding:.45rem .75rem;border:1px solid #e2e8f0;color:#dc2626">NSSF</td><td style="padding:.45rem .75rem;text-align:right;border:1px solid #e2e8f0;color:#dc2626">- KES ${fmt(pay.nssf)}</td></tr>
+        <tr style="background:#fef2f2"><td style="padding:.45rem .75rem;border:1px solid #e2e8f0;color:#dc2626">Other Deductions</td><td style="padding:.45rem .75rem;text-align:right;border:1px solid #e2e8f0;color:#dc2626">- KES ${fmt(pay.deduct)}</td></tr>`;
+    } else {
+      deductRows = `<tr style="background:#fef2f2"><td style="padding:.45rem .75rem;border:1px solid #e2e8f0;color:#dc2626">Total Deductions</td><td style="padding:.45rem .75rem;text-align:right;border:1px solid #e2e8f0;color:#dc2626">- KES ${fmt(pay.deduct)}</td></tr>`;
+    }
+    area.innerHTML = `
+      <div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;max-width:640px;margin:0 auto;font-family:Arial,sans-serif;box-shadow:0 4px 20px rgba(0,0,0,.08)">
+        <div style="background:linear-gradient(135deg,#7c3aed,#1a6fb5);padding:1.4rem 1.75rem;color:#fff">
+          <div style="font-size:1.05rem;font-weight:800;letter-spacing:.03em">${school.toUpperCase()}</div>
+          <div style="font-size:.78rem;opacity:.75;margin-top:.15rem">Official Payslip</div>
+          <div style="font-size:1rem;font-weight:700;margin-top:.5rem">PAYSLIP — ${(month||'').toUpperCase()} ${year}</div>
+          ${pay.status ? `<span style="display:inline-block;margin-top:.35rem;font-size:.72rem;font-weight:700;background:rgba(255,255,255,.18);padding:.2rem .7rem;border-radius:99px">${pay.status}</span>` : ''}
+        </div>
+        <div style="background:#f8f5ff;padding:1rem 1.75rem;display:grid;grid-template-columns:1fr 1fr;gap:.4rem .75rem;font-size:.82rem;border-bottom:1px solid #e2e8f0">
+          <div><span style="color:#64748b">Employee:</span> <strong>${pay.name}</strong></div>
+          <div><span style="color:#64748b">Role:</span> ${pay.role}</div>
+          <div><span style="color:#64748b">Staff ID:</span> ${currentUser.staffId || '—'}</div>
+          <div><span style="color:#64748b">Employment:</span> ${pay.type}</div>
+          <div><span style="color:#64748b">Pay Period:</span> <strong>${month} ${year}</strong></div>
+          <div><span style="color:#64748b">Department:</span> ${currentUser.dept || '—'}</div>
+        </div>
+        <div style="padding:1rem 1.75rem">
+          <table style="width:100%;border-collapse:collapse;font-size:.83rem">
+            <thead><tr style="background:#f1f5f9">
+              <th style="padding:.5rem .75rem;text-align:left;border:1px solid #e2e8f0;font-weight:700;color:#334155">Description</th>
+              <th style="padding:.5rem .75rem;text-align:right;border:1px solid #e2e8f0;font-weight:700;color:#334155">Amount (KES)</th>
+            </tr></thead>
+            <tbody>
+              <tr><td style="padding:.45rem .75rem;border:1px solid #e2e8f0">Basic Salary</td><td style="padding:.45rem .75rem;text-align:right;border:1px solid #e2e8f0;font-weight:600">${fmt(pay.basic)}</td></tr>
+              <tr><td style="padding:.45rem .75rem;border:1px solid #e2e8f0">Allowances</td><td style="padding:.45rem .75rem;text-align:right;border:1px solid #e2e8f0;font-weight:600;color:#0d9488">${fmt(pay.allow)}</td></tr>
+              ${deductRows}
+              <tr style="background:#ede9fe">
+                <td style="padding:.6rem .75rem;border:1px solid #e2e8f0;font-weight:800;color:#7c3aed;font-size:.9rem">NET PAY</td>
+                <td style="padding:.6rem .75rem;text-align:right;border:1px solid #e2e8f0;font-weight:800;color:#7c3aed;font-size:1rem">KES ${fmt(pay.net)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:.75rem 1.75rem;background:#faf5ff;border-top:1px solid #e2e8f0;font-size:.7rem;color:#94a3b8;text-align:center">
+          Generated ${new Date().toLocaleDateString('en-KE')} &nbsp;·&nbsp; ${school}
+        </div>
+      </div>`;
+  }
+
+  // Save to payslip history with full breakdown
+  let history = JSON.parse(localStorage.getItem('charanas_payslipHistory') || '[]');
+  const exists = history.find(h => h.staffId === currentUser.staffId && h.month === month && h.year === String(year));
+  if (!exists) {
+    history.push({ id: 'ps_' + Date.now(), staffId: currentUser.staffId, name: pay.name, role: pay.role, month, year: String(year), net: pay.net,
+      basic: pay.basic, allow: pay.allow, nhif: pay.nhif, nssf: pay.nssf, deduct: pay.deduct, type: pay.type || '' });
+    localStorage.setItem('charanas_payslipHistory', JSON.stringify(history));
+    sppRenderHistory();
+  }
+}
+
+function sppPrintPayslip() {
+  const month = document.getElementById('sppMonth')?.value || '';
+  const year  = document.getElementById('sppYear')?.value  || '';
+  const pay = _sppGetPayData(currentUser.staffId, month, year);
+  if (!pay) { showToast('No salary record found for this period.', 'error'); return; }
+  const doc = _sppBuildPDF(month, year, pay, _sppSchoolName());
+  const blobUrl = doc.output('bloburl');
+  const win = window.open(blobUrl, '_blank');
+  if (win) win.onload = () => { try { win.print(); } catch(e){} };
+  else showToast('Allow pop-ups to print, or use Download instead.', 'info');
+}
+
+function sppDownloadPayslip() {
+  const month = document.getElementById('sppMonth')?.value || '';
+  const year  = document.getElementById('sppYear')?.value  || '';
+  const pay = _sppGetPayData(currentUser.staffId, month, year);
+  if (!pay) { showToast('No salary record found for this period.', 'error'); return; }
+  const doc = _sppBuildPDF(month, year, pay, _sppSchoolName());
+  const safeName = (pay.name || currentUser.staffId || 'Staff').replace(/\s+/g, '_');
+  doc.save(`Payslip_${safeName}_${month}_${year}.pdf`);
+  showToast('Payslip PDF downloaded <i class="fa-solid fa-check"></i>', 'success');
+}
+
+function sppBuildAndDownloadPayslip(month, year) {
+  if (!currentUser || currentUser.role !== 'staff_payslip') return;
+  const pay = _sppGetPayData(currentUser.staffId, month, year);
+  if (!pay) { showToast('No salary record found for this period.', 'error'); return; }
+  const doc = _sppBuildPDF(month, year, pay, _sppSchoolName());
+  doc.save(`Payslip_${currentUser.staffId || 'staff'}_${month}_${year}.pdf`);
+  showToast('Payslip PDF downloaded <i class="fa-solid fa-check"></i>', 'success');
+}
+
+function sppRenderHistory() {
+  const body = document.getElementById('sppHistBody');
+  if (!body || !currentUser || currentUser.role !== 'staff_payslip') return;
+  let history = JSON.parse(localStorage.getItem('charanas_payslipHistory') || '[]');
+  // Resolve internal ID so history entries saved under either ID are found
+  const _allStaff = JSON.parse(localStorage.getItem(staffDetailsKey()) || '[]');
+  const _staffRec = _allStaff.find(s =>
+    (s.staffId || '').toLowerCase() === (currentUser.staffId || '').toLowerCase() || s.id === currentUser.staffId
+  );
+  const _internalId = _staffRec ? _staffRec.id : null;
+  // SECURITY: only show this staff member's own payslips
+  history = history.filter(h =>
+    h.staffId === currentUser.staffId || (_internalId && h.staffId === _internalId)
+  );
+  const search = (document.getElementById('sppHistSearch')?.value || '').toLowerCase().trim();
+  if (search) history = history.filter(h => (h.month + ' ' + h.year).toLowerCase().includes(search));
+  if (!history.length) {
+    body.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:2rem">No payslips generated yet. Use the <strong>Current Payslip</strong> tab to generate one.</td></tr>';
+    return;
+  }
+  body.innerHTML = history.map((h, i) => `
+    <tr style="border-top:1px solid var(--border)">
+      <td style="padding:.5rem .75rem">${i + 1}</td>
+      <td style="padding:.5rem .75rem;font-weight:600">${h.month}</td>
+      <td style="padding:.5rem .75rem">${h.year}</td>
+      <td style="padding:.5rem .75rem;text-align:right;font-weight:700;color:var(--primary,#7c3aed);font-family:var(--mono)">KES ${Number(h.net).toLocaleString()}</td>
+      <td style="padding:.5rem .75rem;text-align:center;white-space:nowrap">
+        <button class="btn btn-outline btn-xs" onclick="sppReloadPayslip('${h.month}','${h.year}')"><i class="fa-solid fa-eye"></i> View</button>
+        <button class="btn btn-outline btn-xs" style="border-color:#0d9488;color:#0d9488;margin-left:.3rem" onclick="sppBuildAndDownloadPayslip('${h.month}','${h.year}')"><i class="fa-solid fa-download"></i> Download</button>
+        <button class="btn btn-outline btn-xs" style="border-color:#7c3aed;color:#7c3aed;margin-left:.3rem" onclick="(function(){sppReloadPayslip('${h.month}','${h.year}');setTimeout(sppPrintPayslip,400);})()"><i class="fa-solid fa-print"></i> Print</button>
+      </td>
+    </tr>`).join('');
+}
+
+function sppReloadPayslip(month, year) {
+  const monthSel = document.getElementById('sppMonth'); if (monthSel) monthSel.value = month;
+  const yearSel  = document.getElementById('sppYear');  if (yearSel)  yearSel.value  = year;
+  sppOpenTab('sppCurrent', document.getElementById('sppTabCurrent'));
+  setTimeout(sppPreviewPayslip, 100);
+}
+
+function sppRenderDetails() {
+  const body = document.getElementById('sppDetailsBody');
+  if (!body || !currentUser || currentUser.role !== 'staff_payslip') return;
+  const staffList = JSON.parse(localStorage.getItem(staffDetailsKey()) || '[]');
+  const s = staffList.find(x => x.id === currentUser.staffRecordId);
+  if (!s) { body.innerHTML = '<p style="color:var(--muted)">No details on file. Contact the administrator.</p>'; return; }
+  const row = (label, val) => val ? `<div style="display:flex;gap:.5rem;padding:.55rem 0;border-bottom:1px solid var(--border-lt)"><span style="color:var(--muted);min-width:140px;font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em">${label}</span><span style="font-weight:600">${val}</span></div>` : '';
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 2rem">
+      <div>
+        ${row('Full Name', s.name)}
+        ${row('Staff ID / TSC', s.staffId)}
+        ${row('Role / Title', s.role)}
+        ${row('Department', s.dept)}
+        ${row('Employment Type', s.empType)}
+      </div>
+      <div>
+        ${row('Phone', s.phone)}
+        ${row('Email', s.email)}
+        ${row('Join Date', s.joinDate)}
+        ${row('Status', s.status)}
+        ${row('Qualification', s.qual)}
+      </div>
+    </div>`;
 }
 
 // ══════════════════════════════════════════════
@@ -1231,8 +2025,35 @@ function guestShowTab(which) {
 //   PLATFORM ADMIN — EXAM DOWNLOAD FEE CONTROLS
 // ══════════════════════════════════════════════
 // ── Platform Admin Tab Switcher ──────────────────────────
+function platNavbarTab(tabId, btnId) {
+  // Sync the inner tab bar (hidden for platform admin mode, but keep state correct)
+  const innerBtn = document.querySelector('#platTabBar .plat-tab-btn[onclick*="' + tabId + '"]');
+  openPlatTab(tabId, innerBtn);
+  // Update top navbar active state
+  document.querySelectorAll('.plat-nb-btn').forEach(b => b.classList.remove('active'));
+  const nb = document.getElementById(btnId);
+  if (nb) nb.classList.add('active');
+  // Update sidebar active state
+  document.querySelectorAll('.sb-plat-tab').forEach(b => b.classList.remove('sb-plat-active','active'));
+  const tabKey = tabId.replace('platTab-','');
+  const sbItem = document.getElementById('sbPlat-' + tabKey);
+  if (sbItem) sbItem.classList.add('sb-plat-active','active');
+  // Update mobile bottom nav active state
+  document.querySelectorAll('.mbn-plat').forEach(b => b.classList.remove('active'));
+  const mbnItem = document.getElementById('mbnPlat-' + tabKey);
+  if (mbnItem) mbnItem.classList.add('active');
+}
+
+// Expose sbPlatActivate for inline onclick
+function sbPlatActivate(el) {
+  document.querySelectorAll('.sb-plat-tab').forEach(b => b.classList.remove('sb-plat-active','active'));
+  if (el) el.classList.add('sb-plat-active','active');
+}
+if (typeof window !== 'undefined') window.sbPlatActivate = sbPlatActivate;
+
 function openPlatTab(tabId, btn) {
   if (tabId === 'platTab-system') { setTimeout(platRenderLiteModeConfig, 50); }
+  if (tabId === 'platTab-access') { setTimeout(()=>{ if(typeof acInitPricing==='function'){acInitPricing();acRenderSchoolList();} }, 80); }
   document.querySelectorAll('#s-platform .plat-tab-panel').forEach(p => { p.style.display = 'none'; });
   document.querySelectorAll('#platTabBar .plat-tab-btn').forEach(b => {
     b.style.background = 'var(--surface)';
@@ -1308,6 +2129,44 @@ function platLockSchoolExamDl() {
   platRenderExamDlFeeUI();
 }
 
+// ── Per-paper unlock (by marks tier) ──────────────────────────────────────
+function platUnlockPaperByMarks() {
+  const sel = document.getElementById('platExamDlUnlockSchool');
+  const marksInp = document.getElementById('platPaperUnlockMarks');
+  const schoolId = sel?.value; if (!schoolId) { showToast('Select a school first','error'); return; }
+  const marks = parseInt(marksInp?.value||0);
+  if (!marks) { showToast('Enter total marks of the paper','error'); return; }
+  const fee = getExamDlFeeForMarks(marks);
+  const key = schoolId + ':marks' + marks;
+  unlockPaper(key);
+  const school = platformSchools.find(s=>s.id===schoolId);
+  showToast(`<i class="fa-solid fa-circle-check"></i> ${school?.name||schoolId} — ${marks}-mark paper unlocked (KES ${fee} paid)`, 'success');
+  platRenderExamDlFeeUI();
+}
+
+function platRenderPaperUnlockList() {
+  const el = document.getElementById('platPaperUnlockList'); if (!el) return;
+  const papers = getPaperUnlocked();
+  loadPlatform();
+  if (!papers.length) { el.innerHTML='<div style="font-size:.78rem;color:var(--muted)">No individual papers unlocked yet.</div>'; return; }
+  el.innerHTML = papers.map(key => {
+    const parts = key.split(':');
+    const schoolId = parts[0];
+    const info = parts.slice(1).join(':');
+    const s = platformSchools.find(x=>x.id===schoolId);
+    return `<span style="display:inline-flex;align-items:center;gap:.3rem;background:rgba(37,99,235,.08);color:#1e40af;border:1px solid rgba(37,99,235,.25);border-radius:99px;padding:.2rem .7rem;font-size:.75rem;font-weight:700;margin:.2rem .2rem 0 0">
+      <i class="fa-solid fa-file-circle-check"></i> ${s?s.name:schoolId} · ${info}
+      <button onclick="platRemovePaperUnlock('${key}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.9rem;padding:0 .1rem;line-height:1">×</button>
+    </span>`;
+  }).join('');
+}
+
+function platRemovePaperUnlock(key) {
+  const arr = getPaperUnlocked().filter(k=>k!==key);
+  localStorage.setItem(K_EXAM_PAPER_UNLOCKED, JSON.stringify(arr));
+  platRenderExamDlFeeUI();
+}
+
 function platRenderExamDlUnlockList() {
   const el = document.getElementById('platExamDlUnlockList'); if (!el) return;
   const unlocked = getExamDlUnlocked();
@@ -1321,6 +2180,7 @@ function platRenderExamDlUnlockList() {
         <button onclick="platRemoveUnlockById('${id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.9rem;padding:0 .1rem;line-height:1">×</button>
       </span>`;
     }).join('');
+  platRenderPaperUnlockList();
 }
 
 function platRemoveUnlockById(schoolId) {
@@ -1340,13 +2200,13 @@ function enterPlatformDashboard() {
   const tb = document.getElementById('topbar'); if (tb) tb.style.display = '';
   const sb = document.getElementById('sidebar'); if (sb) sb.style.display = '';
   document.getElementById('tbUser').innerHTML = '<i class="fa-solid fa-gear"></i>️ Platform Admin';
-  // Platform portal: no mobile bottom nav
+  // Platform portal: show mobile nav with platform tabs only (no school items)
   const mbn = document.getElementById('mobileBottomNav');
-  if (mbn) mbn.style.display = 'none';
+  if (mbn) mbn.style.display = '';
   const mbnRestore = document.getElementById('mbnRestoreTab');
   if (mbnRestore) mbnRestore.style.display = 'none';
   // Platform portal: hide school-specific nav, only show Platform Admin link
-  ['subjects','classes','teachers','students','timetable','exambuilder','exams','reports','papers','fees','messaging','settings'].forEach(s=>{
+  ['subjects','classes','teachers','staffdetails','students','timetable','exambuilder','exams','reports','papers','fees','messaging','settings'].forEach(s=>{
     const el=document.querySelector('[data-s="'+s+'"]'); if(el) el.style.display='none';
   });
   // Hide school-only exam tabs for platform admin
@@ -1356,6 +2216,17 @@ function enterPlatformDashboard() {
     if (el.dataset.s !== 'platform') el.style.display='none';
   });
   const platLink = document.getElementById('platNavLink'); if(platLink) platLink.style.display='';
+  // Show platform admin navbar (desktop) and mobile platform tab items
+  document.body.classList.add('plat-admin-mode');
+  document.querySelectorAll('.mbn-plat').forEach(el => el.style.display = '');
+  // Activate Schools tab in sidebar and mobile nav by default
+  setTimeout(function() {
+    const sbSchools = document.getElementById('sbPlat-schools');
+    if (sbSchools) { document.querySelectorAll('.sb-plat-tab').forEach(b=>b.classList.remove('sb-plat-active','active')); sbSchools.classList.add('sb-plat-active','active'); }
+    document.querySelectorAll('.mbn-plat').forEach(b => b.classList.remove('active'));
+    const mbnSchools = document.getElementById('mbnPlat-schools');
+    if (mbnSchools) mbnSchools.classList.add('active');
+  }, 50);
   if (localStorage.getItem('ei_dark')==='1') applyDark(true);
   renderPlatformDashboard();
   platRenderNavConfig();
@@ -1379,6 +2250,9 @@ function enterSchoolAsPlatformAdmin(schoolId) {
     canAnalyse: true, canReport: true, canMerit: true,
     _impersonatedByPlatformAdmin: true
   };
+  // Hide platform admin navbar when impersonating a school
+  document.body.classList.remove('plat-admin-mode');
+  document.querySelectorAll('.mbn-plat').forEach(el => el.style.display = 'none');
   // Show back-to-platform banner
   const btp = document.getElementById('backToPlatformBar');
   if (btp) btp.style.display = 'flex';
@@ -1579,6 +2453,10 @@ function renderPlatformSchoolMgmtList() {
           ${isActive ? '⏸ Suspend' : '▶ Activate'}
         </button>
         ${!isActive ? `<button onclick="editDeactivationMessage('${s.id}');setTimeout(renderPlatformSchoolMgmtList,300)" style="font-size:.72rem;font-weight:700;padding:.3rem .7rem;border-radius:7px;cursor:pointer;font-family:inherit;border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);color:#f59e0b"><i class="fa-solid fa-pen"></i>️ Edit Msg</button>` : ''}
+        <button onclick="event.stopPropagation();resetSchoolPwd('${s.id}')" 
+          style="font-size:.72rem;font-weight:700;padding:.3rem .7rem;border-radius:7px;cursor:pointer;font-family:inherit;border:1px solid rgba(245,158,11,.35);background:rgba(245,158,11,.08);color:#b45309">
+          <i class="fa-solid fa-key"></i> Reset Pwd
+        </button>
         <button onclick="event.stopPropagation();platDeleteSchool('${s.id}')" 
           style="font-size:.72rem;font-weight:700;padding:.3rem .7rem;border-radius:7px;cursor:pointer;font-family:inherit;border:1px solid rgba(239,68,68,.25);background:rgba(239,68,68,.06);color:#ef4444">
           <i class="fa-solid fa-trash"></i> Delete
@@ -2154,39 +3032,37 @@ function platChangePassword() {
 
 // ── Platform AI API Key ──
 function platSaveApiKey() {
-  const key = (document.getElementById('platApiKeyInput')?.value||'').trim();
+  const key = (document.getElementById('platApiKeyInput')?.value||'').trim().replace(/^["']|["']$/g, '');
   const status = document.getElementById('platApiKeyStatus');
   if (!key) { if(status){status.style.color='var(--danger)';status.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> Please enter an API key.';} return; }
-  // Save via the shared ebSaveApiKey mechanism (stores in settings.ebApiKey)
-  // We call the underlying save directly
+  // Save to current school-scoped settings
   settings.ebApiKey = key;
   save(K.settings, [settings]);
+  // ALSO save to platform-global key so ALL schools can use it
+  localStorage.setItem('ei_platform_api_key', key);
+  // Also propagate to the no-prefix global settings bucket
+  try {
+    const gs = JSON.parse(localStorage.getItem('ei_settings') || '[{}]');
+    if (!gs[0]) gs[0] = {};
+    gs[0].ebApiKey = key;
+    localStorage.setItem('ei_settings', JSON.stringify(gs));
+  } catch(e) {}
   showToast('API key saved <i class="fa-solid fa-circle-check"></i>', 'success');
-  if(status){status.style.color='#10b981';status.innerHTML = '<i class="fa-solid fa-circle-check"></i> Saved!';}
+  if(status){status.style.color='#10b981';status.innerHTML = '<i class="fa-solid fa-circle-check"></i> Saved — available to all schools!';}
   setTimeout(()=>{if(status)status.textContent='';},3000);
 }
 async function platTestApiKey() {
   const status = document.getElementById('platApiKeyStatus');
   if(status){status.style.color='var(--muted)';status.textContent='⏳ Testing...';}
-  // Test built-in proxy first
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:10,messages:[{role:'user',content:'Hi'}]})
-    });
-    if(res.ok){if(status){status.style.color='#10b981';status.innerHTML = '<i class="fa-solid fa-circle-check"></i> AI Connected (built-in — no key needed)!';}showToast('AI is connected!','success');return;}
-  } catch(e){}
-  // Try the saved key
   const key=(document.getElementById('platApiKeyInput')?.value||'').trim()||ebGetApiKey();
-  if(!key){if(status){status.style.color='var(--danger)';status.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> No key entered and built-in proxy unavailable.';}return;}
+  if(!key){if(status){status.style.color='var(--danger)';status.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> Please enter a Groq API key.';}return;}
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions',{
       method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:10,messages:[{role:'user',content:'Hello'}]})
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},
+      body:JSON.stringify({model:'llama-3.3-70b-versatile',max_tokens:5,messages:[{role:'user',content:'Hi'}]})
     });
-    if(res.ok){if(status){status.style.color='#10b981';status.innerHTML = '<i class="fa-solid fa-circle-check"></i> API Key works!';}showToast('API key connected!','success');}
+    if(res.ok){if(status){status.style.color='#10b981';status.innerHTML = '<i class="fa-solid fa-circle-check"></i> Groq API Key works!';}showToast('Groq API key connected!','success');}
     else{const e=await res.json().catch(()=>({}));if(status){status.style.color='var(--danger)';status.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> '+(e.error?.message||'Invalid key');}}
   } catch(err){if(status){status.style.color='var(--danger)';status.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> '+err.message;}}
 }
@@ -2362,14 +3238,22 @@ const NAV_CONFIG_SCHEMA = [
   { section:'dashboard',   label:'<i class="fa-solid fa-house"></i> Dashboard',         tabs:[] },
   { section:'subjects',    label:'<i class="fa-solid fa-book"></i> Subjects',           tabs:[] },
   { section:'classes',     label:'<i class="fa-solid fa-school"></i> Classes & Streams',  tabs:[] },
-  { section:'teachers',    label:'<i class="fa-solid fa-person"></i>‍<i class="fa-solid fa-school"></i> Teachers',           tabs:[] },
-  { section:'students',    label:'<i class="fa-solid fa-user-graduate"></i> Students',           tabs:[] },
+  { section:'teachers',     label:'<i class="fa-solid fa-person"></i>‍<i class="fa-solid fa-school"></i> Teachers',           tabs:[] },
+  { section:'staffdetails', label:'<i class="fa-solid fa-id-card"></i> Staff Details', tabs:[
+    { id:'sdpList',    label:'<i class="fa-solid fa-table-list"></i> Directory' },
+    { id:'sdpAddEdit', label:'<i class="fa-solid fa-user-plus"></i> Add / Edit' },
+    { id:'sdpLeave',   label:'<i class="fa-solid fa-calendar-minus"></i> Leave' },
+    { id:'sdpDocs',    label:'<i class="fa-solid fa-folder-open"></i> Documents' },
+    { id:'sdpRoles',   label:'<i class="fa-solid fa-tags"></i> Roles' },
+    { id:'sdpSalary',  label:'<i class="fa-solid fa-money-bill-wave"></i> Salary' },
+  ]},
+  { section:'students',     label:'<i class="fa-solid fa-user-graduate"></i> Students',          tabs:[] },
   { section:'timetable',   label:'<i class="fa-solid fa-clock"></i> Timetables',         tabs:[] },
   { section:'exambuilder', label:'<i class="fa-solid fa-pen"></i>️ Exam Builder',        tabs:[] },
   { section:'exams',       label:'<i class="fa-solid fa-file-pen"></i> Exams', tabs:[
     { id:'tabCreateExam',       label:'Create Exam' },
     { id:'tabExamList',         label:'Exam List' },
-    { id:'tabExamTimetable',    label:'<i class="fa-solid fa-calendar-days"></i> Exam Timetable' },
+    { id:'tabExamTimetable',    label:'Exam Timetable' },
     { id:'tabUploadMarks',      label:'Upload Marks' },
     { id:'tabAnalyse',          label:'Analyse' },
     { id:'tabMeritList',        label:'Merit List' },
@@ -2388,6 +3272,12 @@ const NAV_CONFIG_SCHEMA = [
     { id:'tabFeeImport',     label:'⬆ Import Fees' },
     { id:'tabFeeReminders',  label:'<i class="fa-solid fa-bell"></i> Reminders' },
     { id:'tabFeeReceipts',   label:'<i class="fa-solid fa-receipt"></i> Receipts' },
+  ]},
+  { section:'salaries',    label:'<i class="fa-solid fa-money-bill-wave"></i> Finance → Salaries', tabs:[
+    { id:'fmtSalaries',      label:'<i class="fa-solid fa-money-bill-wave"></i> Salaries (main tab button)' },
+    { id:'tabStaffSalary',   label:'<i class="fa-solid fa-users"></i> Staff Salary' },
+    { id:'tabPayroll',       label:'<i class="fa-solid fa-file-invoice-dollar"></i> Payroll' },
+    { id:'tabPayslips',      label:'<i class="fa-solid fa-scroll"></i> Payslips' },
   ]},
   { section:'messaging',   label:'<i class="fa-solid fa-comments"></i> Messaging',          tabs:[] },
   { section:'settings',    label:'<i class="fa-solid fa-screwdriver-wrench"></i>️ Settings',            tabs:[] },
@@ -2555,16 +3445,17 @@ function applyPlatformNavConfig() {
 
   // First reset all school nav items to visible as baseline
   NAV_CONFIG_SCHEMA.forEach(sec => {
-    if (sec.section !== 'dashboard') {
+    if (sec.section !== 'dashboard' && sec.section !== 'salaries') {
       const sbLink = document.querySelector('.sb-nav [data-s="'+sec.section+'"]');
       if (sbLink) { sbLink.dataset.platHidden = ''; sbLink.style.display = ''; }
       const mbnLink = document.querySelector('.mbn-item[data-s="'+sec.section+'"]');
       if (mbnLink) mbnLink.style.display = '';
     }
     sec.tabs.forEach(tab => {
-      const allBtns = document.querySelectorAll('#'+sec.section+'TabBar .tb, [onclick*="'+tab.id+'"]');
+      const allBtns = document.querySelectorAll('#'+sec.section+'TabBar .tb, [onclick*="'+tab.id+'"], #'+tab.id);
       allBtns.forEach(btn => {
-        if (btn.getAttribute('onclick') && btn.getAttribute('onclick').includes(tab.id)) {
+        const oc = btn.getAttribute('onclick') || '';
+        if (oc.includes(tab.id) || btn.id === tab.id) {
           btn.style.display = '';
         }
       });
@@ -2574,7 +3465,7 @@ function applyPlatformNavConfig() {
   // Then apply platform config — hide anything explicitly disabled
   NAV_CONFIG_SCHEMA.forEach(sec => {
     const secVisible = cfg[sec.section] !== false;
-    if (sec.section !== 'dashboard') {
+    if (sec.section !== 'dashboard' && sec.section !== 'salaries') {
       const sbLink = document.querySelector('.sb-nav [data-s="'+sec.section+'"]');
       if (sbLink) {
         sbLink.dataset.platHidden = secVisible ? '' : '1';
@@ -2587,9 +3478,10 @@ function applyPlatformNavConfig() {
       const tabKey = sec.section + '__' + tab.id;
       const tabVisible = cfg[tabKey] !== false;
       if (!tabVisible) {
-        const allBtns = document.querySelectorAll('#'+sec.section+'TabBar .tb, [onclick*="'+tab.id+'"]');
+        const allBtns = document.querySelectorAll('#'+sec.section+'TabBar .tb, [onclick*="'+tab.id+'"], #'+tab.id);
         allBtns.forEach(btn => {
-          if (btn.getAttribute('onclick') && btn.getAttribute('onclick').includes(tab.id)) {
+          const oc = btn.getAttribute('onclick') || '';
+          if (oc.includes(tab.id) || btn.id === tab.id) {
             btn.style.display = 'none';
           }
         });
@@ -2798,11 +3690,20 @@ function enterSchool(schoolId) {
   // Full rendering happens in finishLogin() after credentials are verified.
   currentSchoolId = school.id;
   document.getElementById('schoolSelector').style.display = 'none';
-  document.getElementById('loginScreen').style.display    = 'flex';
-  document.getElementById('schoolLoginLabel').textContent = school.name;
-  document.getElementById('lUser').value = '';
-  document.getElementById('lPass').value = '';
-  document.getElementById('loginErr').style.display = 'none';
+  // Show the unified login form with the school's name as subtitle
+  const _ulEnter = document.getElementById('unifiedLogin');
+  if (_ulEnter) {
+    _ulEnter.style.display = 'flex';
+    const _sub = document.getElementById('uniSubtitle');
+    if (_sub) _sub.textContent = school.name + ' — Sign In';
+    const _u = document.getElementById('uniUser');
+    const _p = document.getElementById('uniPass');
+    const _e = document.getElementById('uniErr');
+    if (_u) _u.value = '';
+    if (_p) _p.value = '';
+    if (_e) _e.style.display = 'none';
+    setTimeout(() => { if (_u) _u.focus(); }, 100);
+  }
 }
 
 // Storage for platform admin session during school impersonation
@@ -2810,6 +3711,18 @@ let _platformAdminSession = null;
 
 function backToPlatformPortal() {
   if (!_platformAdminSession) { doLogout(); return; }
+  // Re-enable platform admin mode UI when returning to platform portal
+  document.body.classList.add('plat-admin-mode');
+  const mbn = document.getElementById('mobileBottomNav');
+  if (mbn) mbn.style.display = '';
+  document.querySelectorAll('.mbn-plat').forEach(el => el.style.display = '');
+  setTimeout(function() {
+    const sbSchools = document.getElementById('sbPlat-schools');
+    if (sbSchools) { document.querySelectorAll('.sb-plat-tab').forEach(b=>b.classList.remove('sb-plat-active','active')); sbSchools.classList.add('sb-plat-active','active'); }
+    document.querySelectorAll('.mbn-plat').forEach(b => b.classList.remove('active'));
+    const mbnSchools = document.getElementById('mbnPlat-schools');
+    if (mbnSchools) mbnSchools.classList.add('active');
+  }, 50);
   // Restore platform admin session
   currentUser     = _platformAdminSession.user;
   currentSchoolId = null;
@@ -2961,6 +3874,19 @@ function loadSchoolContext(school) {
   marks    = load(K.marks);    settings = load(K.settings)[0] || defaultSettings();
   admins   = load(K.admins);   msgLog   = load(K.msgLog);
   smsCredits = parseInt(localStorage.getItem(K.smsCredits) || '0');
+  // Inherit platform-level API key into school settings if not already set
+  if (!settings.ebApiKey) {
+    const platformKey = localStorage.getItem('ei_platform_api_key') || '';
+    if (!platformKey) {
+      // Also check the no-prefix global settings (saved by platform admin before our fix)
+      try {
+        const gs = JSON.parse(localStorage.getItem('ei_settings') || '[{}]');
+        if (gs[0]?.ebApiKey) settings.ebApiKey = gs[0].ebApiKey;
+      } catch(e) {}
+    } else {
+      settings.ebApiKey = platformKey;
+    }
+  }
   loadFees(); loadStreamAssignments(); loadGradingSystems(); loadTermlyPapers();
   if (!settings.schoolName) { settings.schoolName = school.name; save(K.settings,[settings]); }
   seedData();
@@ -3133,9 +4059,11 @@ function finishLogin(school) {
 
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
+  const ul = document.getElementById('unifiedLogin');
   const pl = document.getElementById('platformLogin');
   const ls = document.getElementById('loginScreen');
-  if (pl && pl.style.display !== 'none') doPlatformLogin();
+  if (ul && ul.style.display !== 'none') doUnifiedLogin();
+  else if (pl && pl.style.display !== 'none') doPlatformLogin();
   else if (ls && ls.style.display !== 'none') doLogin();
 });
 function doLogout() {
@@ -3148,6 +4076,9 @@ function doLogout() {
   // Hide student portal overlay if open
   const sp = document.getElementById('studentPortalOverlay');
   if (sp) sp.style.display = 'none';
+  // Hide staff payslip portal if open
+  const spp = document.getElementById('staffPayslipPortal');
+  if (spp) spp.style.display = 'none';
   // Hide guest portal if open
   const gp = document.getElementById('guestPortal');
   if (gp) gp.style.display = 'none';
@@ -3170,7 +4101,7 @@ function doLogout() {
   if (mbnRestore) { mbnRestore.classList.remove('visible'); mbnRestore.style.display = 'none'; }
   document.body.classList.remove('mbn-hidden');
   // Restore ALL nav links in both sidebar AND mobile bottom nav for next login
-  ['dashboard','subjects','classes','teachers','students','timetable','exambuilder','exams','reports','papers','fees','messaging','settings'].forEach(s=>{
+  ['dashboard','subjects','classes','teachers','staffdetails','students','timetable','exambuilder','exams','reports','papers','fees','messaging','settings'].forEach(s=>{
     document.querySelectorAll('[data-s="'+s+'"]').forEach(el => el.style.display='');
   });
   // Also restore topbar user display
@@ -3178,6 +4109,11 @@ function doLogout() {
   // Also restore papers upload card visibility
   const termlyUpload = document.getElementById('termlyUploadCard'); if (termlyUpload) termlyUpload.style.display='';
   const platLink=document.getElementById('platNavLink'); if(platLink) platLink.style.display='none';
+  // Clean up platform admin mode
+  document.body.classList.remove('plat-admin-mode');
+  document.querySelectorAll('.mbn-plat').forEach(el => el.style.display = 'none');
+  const platAdminNavbar = document.getElementById('platAdminNavbar');
+  if (platAdminNavbar) platAdminNavbar.style.display = 'none';
   // Hide all login screens, then show the main unified login
   ['loginScreen','platformLogin','dualPortal','schoolSelector'].forEach(id => {
     const el = document.getElementById(id); if (el) el.style.display = 'none';
@@ -3290,8 +4226,56 @@ function launchApp() {
   // Apply platform nav visibility config to school portal
   applyPlatformNavConfig();
 
+  // Enforce access level restrictions for this school (must run after applyPlatformNavConfig)
+  applyAccessLevelRestrictions();
+
   go('dashboard', document.querySelector('[data-s="dashboard"]'));
 }
+/**
+ * Enforces the access level assigned to the current school.
+ * Reads the school's level from ac_school_levels and hides nav sections
+ * that are not included in that level's feature set (AC_LEVEL_FEATURES).
+ * If no level is assigned, all sections remain visible (backward compatible).
+ */
+function applyAccessLevelRestrictions() {
+  if (!currentSchoolId) return;
+
+  // Skip restriction enforcement for platform admins
+  if (currentUser && currentUser.role === 'platform_admin') return;
+
+  const levelIdx = (typeof acGetSchoolLevel === 'function') ? acGetSchoolLevel(currentSchoolId) : null;
+
+  // No level assigned — allow everything (unmanaged school)
+  if (levelIdx === null || levelIdx === undefined) return;
+
+  const allowedFeatures = new Set(AC_LEVEL_FEATURES[levelIdx] || []);
+
+  // Map each gated feature name to its nav section key (data-s attribute value)
+  const featureNavMap = {
+    'Timetable':         ['timetable'],
+    'Fees Management':   ['fees'],
+    'Salary Management': ['staffdetails'],
+    'System Settings':   ['settings'],
+  };
+
+  Object.entries(featureNavMap).forEach(([feature, navSections]) => {
+    const allowed = allowedFeatures.has(feature);
+    navSections.forEach(sec => {
+      document.querySelectorAll('[data-s="' + sec + '"]').forEach(el => {
+        if (!allowed) el.style.display = 'none';
+      });
+    });
+  });
+
+  // Inform the user of their active plan tier
+  const levelName  = (typeof AC_LEVEL_NAMES  !== 'undefined') ? AC_LEVEL_NAMES[levelIdx]  : ('Level ' + (levelIdx + 1));
+  showToast(
+    '<i class="fa-solid fa-layer-group"></i> <strong>' + levelName + '</strong> plan active — some features may be restricted',
+    'info',
+    3500
+  );
+}
+
 function initApp() {
   initLang();
   if (localStorage.getItem('ei_dark') === '1') applyDark(true);
@@ -3309,6 +4293,15 @@ function initApp() {
       loadPlatform();
       enterPlatformDashboard();
       return;
+    }
+
+    // Staff payslip portal restore
+    if (savedUser.role === 'staff_payslip' && savedSchoolId) {
+      currentUser = savedUser;
+      currentSchoolId = savedSchoolId;
+      loadPlatform();
+      const school = platformSchools.find(s => s.id === savedSchoolId);
+      if (school) { loadSchoolContext(school); finishStaffPayslipPortal(school); return; }
     }
 
     // Student portal restore
@@ -4052,7 +5045,8 @@ function onRpClassChange() {
   onRpStudentChange();
 }
 
-
+// Called when exam selection changes — update term/year and stream dropdowns
+function onRpExamChange() {
   const examId = document.getElementById('rpExam')?.value;
   const exam   = examId ? exams.find(e => e.id === examId) : null;
   const rpTerm = document.getElementById('rpTerm');
@@ -4073,6 +5067,7 @@ function onRpClassChange() {
     const relevantStreams = exam?.classId ? streams.filter(s=>s.classId===exam.classId) : streams;
     rpStream.innerHTML = '<option value="">— All Streams —</option>' + relevantStreams.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
   }
+}
 
 // Called when student changes
 function onRpStudentChange() {
@@ -4118,7 +5113,8 @@ function refreshRpFeeAutoLink() {
     const stu = students.find(s => s.id === stuId);
     const rec = feeRecords.find(r => r.studentId===stuId && r.term===effectiveTerm && String(r.year)===effectiveYear);
     if (rec) {
-      const bal = getRecordBalance(rec);
+      const prevBal = getPreviousBalance(stuId, effectiveTerm, effectiveYear);
+      const bal = prevBal + getRecordBalance(rec);
       if (balEl && !balEl.dataset.manuallySet) balEl.value = bal;
       if (badge) {
         badge.style.display = '';
@@ -4380,6 +5376,240 @@ function handleMarksUpload(input) {
   };
   reader.readAsArrayBuffer(file);
   input.value = '';
+}
+
+// ── Print Marks Sheet PDF (blank sheet for manual marks entry) ──
+function printMarksSheet() {
+  const examId   = document.getElementById('umExam').value;
+  const classId  = document.getElementById('umClass').value;
+  const streamId = document.getElementById('umStream').value;
+
+  if (!examId) { showToast('Please select an exam first', 'error'); return; }
+  if (!classId) { showToast('Please select a class first', 'error'); return; }
+
+  const { jsPDF } = window.jspdf;
+  const exam    = exams.find(e => e.id === examId);
+  const cls     = classes.find(c => c.id === classId);
+  const stream  = streams.find(s => s.id === streamId);
+
+  // Get subjects for this exam
+  const examSubIds = exam && exam.subjectIds && exam.subjectIds.length
+    ? exam.subjectIds
+    : subjects.map(s => s.id);
+  const examSubjects = subjects.filter(s => examSubIds.includes(s.id));
+
+  // Get students in the selected class/stream
+  let stuList = students.filter(s => s.classId === classId);
+  if (streamId) stuList = stuList.filter(s => s.streamId === streamId);
+  stuList.sort((a, b) => a.name.localeCompare(b.name));
+
+  if (!stuList.length) { showToast('No students found for the selected class/stream', 'error'); return; }
+  if (!examSubjects.length) { showToast('No subjects found for this exam', 'error'); return; }
+
+  // School info from settings
+  const schoolName = settings.schoolName || 'School';
+  const address    = settings.address    || '';
+  const email      = settings.email      || '';
+  const term       = settings.term       || '';
+  const year       = settings.year       || '';
+
+  // Page setup — always portrait
+  const orientation = 'portrait';
+  const doc = new jsPDF({ orientation, unit: 'mm', format: 'a4' });
+  const W   = 210;
+  const margin = 12;
+
+  const blue    = [26, 111, 181];
+  const darkBg  = [15, 23, 42];
+  const white   = [255, 255, 255];
+  const light   = [241, 245, 249];
+  const muted   = [100, 116, 139];
+  const dark    = [15, 23, 42];
+
+  // ── Letterhead ──
+  doc.setFillColor(...blue);
+  doc.rect(0, 0, W, 28, 'F');
+
+  // School name
+  doc.setTextColor(...white);
+  doc.setFontSize(14);
+  doc.setFont(undefined, 'bold');
+  doc.text(schoolName.toUpperCase(), margin, 10);
+
+  // Address & email on left
+  doc.setFontSize(7.5);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(200, 220, 255);
+  const contactParts = [];
+  if (address) contactParts.push('P.O. Box ' + address);
+  if (email)   contactParts.push(email);
+  if (contactParts.length) doc.text(contactParts.join('  |  '), margin, 16.5);
+
+  // Exam title on right
+  doc.setTextColor(...white);
+  doc.setFontSize(9);
+  doc.setFont(undefined, 'bold');
+  doc.text('MARKS ENTRY SHEET', W - margin, 10, { align: 'right' });
+  doc.setFontSize(7.5);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(200, 220, 255);
+  const examLabel = [exam?.name, term, year].filter(Boolean).join(' · ');
+  doc.text(examLabel, W - margin, 16.5, { align: 'right' });
+
+  // ── Info bar below header ──
+  let y = 32;
+  doc.setFillColor(...light);
+  doc.rect(margin, y, W - margin * 2, 10, 'F');
+  doc.setFontSize(8);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(...dark);
+  const classLabel = [cls?.name, stream?.name].filter(Boolean).join(' — ');
+  doc.text('Class: ' + classLabel, margin + 3, y + 6.5);
+  doc.text('Students: ' + stuList.length, W - margin - 3, y + 6.5, { align: 'right' });
+
+  y += 15;
+
+  // ── Build table ──
+  // Fixed columns: #, Adm No, Student Name
+  // Then one column per subject (blank for writing marks)
+  // Then Total & Avg at the end
+
+  const fixedHead = ['#', 'Adm No', 'Student Name'];
+  const subHeaders = examSubjects.map(s => s.code || s.name.slice(0, 6));
+  const head = [...fixedHead, ...subHeaders];
+
+  const body = stuList.map((stu, idx) => [
+    idx + 1,
+    stu.adm,
+    stu.name,
+    ...examSubjects.map(() => ''),   // blank subject columns
+  ]);
+
+  // Column widths: fixed cols wider, subject cols equal share
+  const fixedWidths  = [8, 18, 40];
+  const usedFixed    = fixedWidths.reduce((a, b) => a + b, 0);
+  const subColW      = Math.max(
+    10,
+    Math.floor((W - margin * 2 - usedFixed) / Math.max(examSubjects.length, 1))
+  );
+  const columnStyles = {};
+  fixedWidths.forEach((w, i)          => { columnStyles[i]                        = { cellWidth: w }; });
+  subHeaders.forEach((_, i)           => { columnStyles[fixedHead.length + i]     = { cellWidth: subColW, halign: 'center' }; });
+
+  doc.autoTable({
+    startY: y,
+    head: [head],
+    body,
+    theme: 'grid',
+    styles: { fontSize: 7, cellPadding: 2.2, textColor: dark, lineColor: [200, 210, 220], lineWidth: 0.25 },
+    headStyles: { fillColor: blue, textColor: white, fontStyle: 'bold', fontSize: 7, halign: 'center', cellPadding: 2.5 },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles,
+    margin: { left: margin, right: margin },
+  });
+
+  // ── Max marks row reference ──
+  const finalY = doc.lastAutoTable.finalY + 4;
+  doc.setFontSize(6.5);
+  doc.setFont(undefined, 'italic');
+  doc.setTextColor(...muted);
+  const maxRef = examSubjects.map(s => `${s.code||s.name.slice(0,5)}: ${s.max}`).join('  ');
+  doc.text('Max marks — ' + maxRef, margin, finalY);
+
+  // ── Footer ──
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(6.5);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(...muted);
+    doc.text(
+      `${schoolName}  ·  ${examLabel}  ·  Page ${i} of ${pageCount}`,
+      W / 2, doc.internal.pageSize.getHeight() - 5,
+      { align: 'center' }
+    );
+    // Teacher signature line
+    doc.text("Teacher's Signature: _______________________", W - margin, doc.internal.pageSize.getHeight() - 5, { align: 'right' });
+  }
+
+  const safeName = [cls?.name, stream?.name, exam?.name].filter(Boolean).join('_').replace(/\s+/g, '_');
+  doc.save(`MarksSheet_${safeName}.pdf`);
+}
+
+// ── Excel Marks Booklet — one sheet per class, all students × all subjects ──
+function downloadMarksBooklet() {
+  const examId = document.getElementById('umExam').value;
+  if (!examId) { showToast('Please select an exam first', 'error'); return; }
+
+  const exam = exams.find(e => e.id === examId);
+  if (!exam) { showToast('Exam not found', 'error'); return; }
+
+  // Subjects for this exam
+  const examSubIds = exam.subjectIds && exam.subjectIds.length
+    ? exam.subjectIds
+    : subjects.map(s => s.id);
+  const examSubjects = subjects.filter(s => examSubIds.includes(s.id));
+  if (!examSubjects.length) { showToast('No subjects found for this exam', 'error'); return; }
+
+  const wb = XLSX.utils.book_new();
+
+  // One sheet per class; if class has streams, one sheet per stream
+  classes.forEach(cls => {
+    const classStreams = streams.filter(s => s.classId === cls.id);
+    const groups = classStreams.length
+      ? classStreams.map(str => ({ label: `${cls.name} ${str.name}`.slice(0, 31), students: students.filter(s => s.classId === cls.id && s.streamId === str.id) }))
+      : [{ label: cls.name.slice(0, 31), students: students.filter(s => s.classId === cls.id) }];
+
+    groups.forEach(group => {
+      if (!group.students.length) return; // skip empty classes/streams
+
+      const stuSorted = [...group.students].sort((a, b) => a.name.localeCompare(b.name));
+
+      // Header row 1: merged title (we'll fake it with a note row)
+      const infoRow = [`Exam: ${exam.name}`, `Class: ${group.label}`, `Term: ${settings.term || ''}`, `Year: ${settings.year || ''}`, `School: ${settings.schoolName || ''}`];
+
+      // Header row 2: column labels
+      const headerRow = ['#', 'Adm No', 'Student Name', 'Gender', ...examSubjects.map(s => s.code || s.name)];
+
+      // Data rows — blank marks cells
+      const dataRows = stuSorted.map((stu, idx) => [
+        idx + 1,
+        stu.adm,
+        stu.name,
+        stu.gender || '',
+        ...examSubjects.map(() => ''),
+      ]);
+
+      // Max marks row at the bottom
+      const maxRow = ['', '', 'MAX MARKS', '', ...examSubjects.map(s => s.max || 100)];
+
+      const wsData = [infoRow, [], headerRow, ...dataRows, [], maxRow];
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+      // Column widths
+      ws['!cols'] = [
+        { wch: 4 },   // #
+        { wch: 12 },  // Adm No
+        { wch: 28 },  // Name
+        { wch: 6 },   // Gender
+        ...examSubjects.map(() => ({ wch: 10 })),
+      ];
+
+      // Freeze the header rows so student names stay visible while scrolling
+      ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+
+      XLSX.utils.book_append_sheet(wb, ws, group.label);
+    });
+  });
+
+  if (wb.SheetNames.length === 0) {
+    showToast('No students found in any class', 'error');
+    return;
+  }
+
+  const fname = `MarksBooklet_${(exam.name || 'exam').replace(/\s+/g, '_')}_${settings.year || ''}.xlsx`;
+  XLSX.writeFile(wb, fname);
+  showToast(`Marks booklet downloaded — ${wb.SheetNames.length} sheet(s) <i class="fa-solid fa-check"></i>`, 'success');
 }
 
 // Download template for ALL subjects (for bulk upload)
@@ -4804,6 +6034,268 @@ function buildSubjectAnalysisHTML(examId, scopeStudentIds) {
         </thead>
         <tbody>${rows || '<tr><td colspan="20" style="text-align:center;color:var(--muted)">No data</td></tr>'}</tbody>
       </table>
+    </div>
+  </div>`;
+}
+
+// ── Gender analysis panel for Merit List ────────────────────────────────────
+// `scored` is the array returned by buildMeritData (each entry has .gender, .mean, .grade, .name, .adm, .points)
+function buildGenderAnalysisMeritHTML(scored, examId) {
+  if (!scored || !scored.length) return '';
+  const gs = getActiveGradingSystem();
+  const gradeKeys = gs.bands.map(b => b.grade);
+
+  const males   = scored.filter(s => s.gender === 'M');
+  const females = scored.filter(s => s.gender === 'F');
+  const total   = scored.length;
+
+  if (!males.length && !females.length) return '';
+
+  function avg(arr, key) {
+    if (!arr.length) return null;
+    return arr.reduce((a, s) => a + (s[key] || 0), 0) / arr.length;
+  }
+
+  const mMean = avg(males,   'mean');
+  const fMean = avg(females, 'mean');
+  const mPts  = avg(males,   'points');
+  const fPts  = avg(females, 'points');
+
+  function topStudent(arr) {
+    if (!arr.length) return null;
+    return arr.reduce((best, s) => s.total > best.total ? s : best, arr[0]);
+  }
+  const mTop = topStudent(males);
+  const fTop = topStudent(females);
+
+  function gradeDist(arr) {
+    const dist = {};
+    gradeKeys.forEach(g => dist[g] = 0);
+    arr.forEach(s => {
+      const g = s.grade?.grade;
+      if (g && dist[g] !== undefined) dist[g]++;
+    });
+    return dist;
+  }
+  const mDist = gradeDist(males);
+  const fDist = gradeDist(females);
+
+  function statCol(arr, mean, pts, top, dist, color, icon, label) {
+    if (!arr.length) return `<div style="flex:1;min-width:160px;opacity:.45;text-align:center;padding:1rem;font-size:.82rem;color:var(--muted)">No ${label} students</div>`;
+    const gradeG = mean !== null ? getMeanGrade((mean / 100) * 8) : null;
+    const ptsG   = pts  !== null ? getPointsGrade(pts) : null;
+    const pct    = Math.round(arr.length / total * 100);
+
+    const distBars = gradeKeys.map(g => {
+      const cnt = dist[g] || 0;
+      if (!cnt) return '';
+      const p = Math.round(cnt / arr.length * 100);
+      return `<div style="display:flex;align-items:center;gap:.4rem;margin-bottom:.2rem">
+        <span style="font-size:.65rem;font-weight:700;width:28px;text-align:right;color:var(--muted)">${g}</span>
+        <div style="flex:1;background:var(--border);border-radius:3px;height:9px;overflow:hidden">
+          <div style="width:${p}%;height:100%;background:${color};border-radius:3px"></div>
+        </div>
+        <span style="font-size:.65rem;color:var(--muted);width:34px">${cnt}(${p}%)</span>
+      </div>`;
+    }).filter(Boolean).join('');
+
+    return `<div style="flex:1;min-width:180px;background:var(--surface,#fff);border:1.5px solid ${color}22;border-radius:10px;padding:.85rem 1rem">
+      <div style="display:flex;align-items:center;gap:.45rem;margin-bottom:.6rem">
+        <span style="font-size:1.1rem">${icon}</span>
+        <strong style="font-size:.9rem;color:${color}">${label}</strong>
+        <span style="margin-left:auto;font-size:.75rem;color:var(--muted)">${arr.length} / ${total} (${pct}%)</span>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.65rem">
+        <div style="background:${color}11;border-radius:7px;padding:.3rem .6rem;text-align:center;min-width:72px">
+          <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;font-weight:600">Mean</div>
+          <div style="font-size:1rem;font-weight:700;color:${color}">${mean !== null ? mean.toFixed(1) : '—'}</div>
+          ${gradeG ? `<span class="badge ${gradeG.cls}" style="font-size:.62rem">${gradeG.grade}</span>` : ''}
+        </div>
+        <div style="background:${color}11;border-radius:7px;padding:.3rem .6rem;text-align:center;min-width:72px">
+          <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;font-weight:600">Avg Pts</div>
+          <div style="font-size:1rem;font-weight:700;color:${color}">${pts !== null ? pts.toFixed(1) : '—'}</div>
+          ${ptsG ? `<span class="badge ${ptsG.cls}" style="font-size:.62rem">${ptsG.grade}</span>` : ''}
+        </div>
+        ${top ? `<div style="background:${color}11;border-radius:7px;padding:.3rem .6rem;flex:1;min-width:110px">
+          <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;font-weight:600">Top Student</div>
+          <div style="font-size:.78rem;font-weight:700;color:var(--fg)">${top.name}</div>
+          <div style="font-size:.68rem;color:var(--muted)">${top.adm} &bull; ${top.mean.toFixed(1)} avg</div>
+        </div>` : ''}
+      </div>
+      <div style="font-size:.65rem;font-weight:600;color:var(--muted);text-transform:uppercase;margin-bottom:.3rem">Grade Distribution</div>
+      ${distBars || '<span style="font-size:.75rem;color:var(--muted)">No data</span>'}
+    </div>`;
+  }
+
+  // Summary comparison row
+  let compHTML = '';
+  if (males.length && females.length && mMean !== null && fMean !== null) {
+    const diff = mMean - fMean;
+    const leader = diff > 0.05 ? '♂ Males lead' : diff < -0.05 ? '♀ Females lead' : 'Equally matched';
+    const lColor = diff > 0.05 ? '#3b82f6' : diff < -0.05 ? '#ec4899' : '#6b7280';
+    compHTML = `<div style="margin-top:.75rem;padding:.45rem .9rem;background:var(--primary-lt,#eff6ff);border-radius:8px;font-size:.8rem;display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
+      <span style="font-weight:700;color:${lColor}">${leader}</span>
+      <span style="color:var(--muted)">Mean gap: <strong style="color:var(--fg)">${Math.abs(diff).toFixed(2)}</strong> marks</span>
+      <span style="color:var(--muted)">♂ ${males.length} &bull; ♀ ${females.length} &bull; Total ${total}</span>
+    </div>`;
+  }
+
+  return `<div style="margin-top:1rem;padding:.85rem 1rem;background:linear-gradient(135deg,#f8faff 0%,#fef9ff 100%);border:1.5px solid var(--border);border-radius:12px">
+    <div style="font-size:.82rem;font-weight:700;color:var(--primary);margin-bottom:.7rem;display:flex;align-items:center;gap:.4rem">
+      <i class="fa-solid fa-venus-mars"></i> Gender Analysis
+    </div>
+    <div style="display:flex;gap:.85rem;flex-wrap:wrap">
+      ${statCol(males,   mMean, mPts, mTop, mDist, '#3b82f6', '♂', 'Male')}
+      ${statCol(females, fMean, fPts, fTop, fDist, '#ec4899', '♀', 'Female')}
+    </div>
+    ${compHTML}
+  </div>`;
+}
+
+// ── Gender analysis section for Summary Analytics ────────────────────────────
+// `clsStudentData` = [{stu, total, mean}], exam + isConsolidated + sourceExamObjs for subject lookup
+function buildGenderAnalysisSummaryHTML(clsStudentData, exam, isConsolidated, sourceExamObjs) {
+  if (!clsStudentData || !clsStudentData.length) return '';
+  const gs = getActiveGradingSystem();
+  const gradeKeys = gs.bands.map(b => b.grade);
+  const podiumLabels = ['🥇','🥈','🥉'];
+
+  const males   = clsStudentData.filter(d => d.stu.gender === 'M');
+  const females = clsStudentData.filter(d => d.stu.gender === 'F');
+  const total   = clsStudentData.length;
+
+  if (!males.length && !females.length) return '';
+
+  function avgMean(arr) {
+    if (!arr.length) return null;
+    return arr.reduce((a,d) => a + d.mean, 0) / arr.length;
+  }
+
+  const mMean = avgMean(males);
+  const fMean = avgMean(females);
+
+  function gradeDist(arr) {
+    const dist = {};
+    gradeKeys.forEach(g => dist[g] = 0);
+    arr.forEach(d => {
+      const g = getMeanGrade ? getMeanGrade((d.mean / 100) * 8) : null;
+      if (g && dist[g.grade] !== undefined) dist[g.grade]++;
+    });
+    return dist;
+  }
+  const mDist = gradeDist(males);
+  const fDist = gradeDist(females);
+
+  function top3HTML(arr, color) {
+    return arr.slice(0,3).map((d,i) => `<div style="display:flex;align-items:center;gap:.5rem;padding:.28rem 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:.9rem">${podiumLabels[i]||`${i+1}.`}</span>
+      <span style="font-size:.8rem;font-weight:600;flex:1;color:var(--fg)">${d.stu.name}</span>
+      <span style="font-size:.75rem;color:${color};font-weight:700">${d.mean.toFixed(1)}</span>
+    </div>`).join('') || '<span style="font-size:.78rem;color:var(--muted)">No data</span>';
+  }
+
+  function distBarsHTML(dist, arr, color) {
+    return gradeKeys.map(g => {
+      const cnt = dist[g] || 0;
+      if (!cnt) return '';
+      const p = arr.length ? Math.round(cnt / arr.length * 100) : 0;
+      return `<div style="display:flex;align-items:center;gap:.4rem;margin-bottom:.22rem">
+        <span style="font-size:.65rem;font-weight:700;width:30px;text-align:right;color:var(--muted)">${g}</span>
+        <div style="flex:1;background:var(--border);border-radius:3px;height:9px;overflow:hidden">
+          <div style="width:${p}%;height:100%;background:${color};border-radius:3px"></div>
+        </div>
+        <span style="font-size:.65rem;color:var(--muted);width:36px">${cnt}(${p}%)</span>
+      </div>`;
+    }).filter(Boolean).join('') || '<span style="font-size:.75rem;color:var(--muted)">—</span>';
+  }
+
+  // Per-subject gender means
+  const subjectRows = (exam.subjectIds || []).map(sid => {
+    const sub = subjects.find(s => s.id === sid); if (!sub) return null;
+    function genderSubMean(arr) {
+      const vals = arr.map(d => smGetSubjectScore(exam, isConsolidated, sourceExamObjs, d.stu.id, sid)).filter(v => v !== null);
+      return vals.length ? parseFloat((vals.reduce((a,b) => a+b, 0) / vals.length).toFixed(1)) : null;
+    }
+    const mS = males.length   ? genderSubMean(males)   : null;
+    const fS = females.length ? genderSubMean(females) : null;
+    if (mS === null && fS === null) return null;
+    const diff = (mS !== null && fS !== null) ? (mS - fS) : null;
+    const bar = diff !== null
+      ? `<div style="display:flex;align-items:center;gap:.3rem">
+          ${diff > 0.5 ? `<span style="color:#3b82f6;font-size:.7rem">♂+${diff.toFixed(1)}</span>` : diff < -0.5 ? `<span style="color:#ec4899;font-size:.7rem">♀+${Math.abs(diff).toFixed(1)}</span>` : `<span style="font-size:.7rem;color:var(--muted)">≈equal</span>`}
+        </div>`
+      : '';
+    return { sub, mS, fS, bar };
+  }).filter(Boolean);
+
+  const subTableHTML = subjectRows.length ? `
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+        <thead>
+          <tr style="background:var(--primary-lt,#eff6ff)">
+            <th style="padding:.4rem .6rem;text-align:left;font-weight:700;color:var(--primary)">Subject</th>
+            <th style="padding:.4rem .6rem;text-align:center;color:#3b82f6">♂ Mean</th>
+            <th style="padding:.4rem .6rem;text-align:center;color:#ec4899">♀ Mean</th>
+            <th style="padding:.4rem .6rem;text-align:center;color:var(--muted)">Gap</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${subjectRows.map((r,i) => `<tr style="background:${i%2?'var(--surface,#fff)':'#fafbff'}">
+            <td style="padding:.35rem .6rem;font-weight:600">${r.sub.name} <span class="badge b-blue" style="font-size:.6rem">${r.sub.code}</span></td>
+            <td style="padding:.35rem .6rem;text-align:center;font-weight:700;color:#3b82f6">${r.mS !== null ? r.mS : '—'}</td>
+            <td style="padding:.35rem .6rem;text-align:center;font-weight:700;color:#ec4899">${r.fS !== null ? r.fS : '—'}</td>
+            <td style="padding:.35rem .6rem;text-align:center">${r.bar}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : '<span style="font-size:.8rem;color:var(--muted)">No subject data</span>';
+
+  function statCard(arr, mean, dist, color, icon, label) {
+    const pct = Math.round(arr.length / total * 100);
+    const gradeG = mean !== null ? getMeanGrade((mean / 100) * 8) : null;
+    return `<div style="flex:1;min-width:200px;background:var(--surface,#fff);border:1.5px solid ${color}33;border-radius:10px;padding:.8rem 1rem">
+      <div style="display:flex;align-items:center;gap:.4rem;margin-bottom:.55rem">
+        <span style="font-size:1rem">${icon}</span>
+        <strong style="color:${color}">${label}</strong>
+        <span style="margin-left:auto;font-size:.72rem;color:var(--muted)">${arr.length} students (${pct}%)</span>
+      </div>
+      <div style="display:flex;gap:.5rem;margin-bottom:.6rem;flex-wrap:wrap">
+        <div style="background:${color}11;border-radius:7px;padding:.3rem .7rem;text-align:center;min-width:80px">
+          <div style="font-size:.63rem;color:var(--muted);font-weight:600;text-transform:uppercase">Class Mean</div>
+          <div style="font-size:1.05rem;font-weight:700;color:${color}">${mean !== null ? mean.toFixed(1) : '—'}</div>
+          ${gradeG ? `<span class="badge ${gradeG.cls}" style="font-size:.6rem">${gradeG.grade}</span>` : ''}
+        </div>
+        <div style="flex:1;min-width:120px">
+          <div style="font-size:.63rem;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:.3rem">Top Performers</div>
+          ${top3HTML(arr, color)}
+        </div>
+      </div>
+      <div style="font-size:.63rem;color:var(--muted);font-weight:600;text-transform:uppercase;margin-bottom:.3rem">Grade Distribution</div>
+      ${distBarsHTML(dist, arr, color)}
+    </div>`;
+  }
+
+  const diff = (mMean !== null && fMean !== null) ? (mMean - fMean) : null;
+  const gapHTML = diff !== null ? (() => {
+    const leader = Math.abs(diff) < 0.5 ? 'Essentially equal performance' : diff > 0 ? '♂ Males outperform' : '♀ Females outperform';
+    const lCol   = Math.abs(diff) < 0.5 ? '#6b7280' : diff > 0 ? '#3b82f6' : '#ec4899';
+    return `<div style="margin-top:.7rem;padding:.45rem .9rem;background:var(--primary-lt,#eff6ff);border-radius:8px;font-size:.8rem;display:flex;gap:1rem;flex-wrap:wrap;align-items:center">
+      <span style="font-weight:700;color:${lCol}">${leader}</span>
+      <span style="color:var(--muted)">Mean gap: <strong>${Math.abs(diff).toFixed(2)}</strong></span>
+      <span style="color:var(--muted)">♂ ${males.length} &bull; ♀ ${females.length}</span>
+    </div>`;
+  })() : '';
+
+  return `<div class="card sm-section" style="border-left:4px solid #8b5cf6">
+    <h4 class="sm-section-title" style="color:#8b5cf6"><i class="fa-solid fa-venus-mars"></i> Gender Analysis</h4>
+    <div style="display:flex;gap:.85rem;flex-wrap:wrap;margin-bottom:.85rem">
+      ${statCard(males,   mMean, mDist, '#3b82f6', '♂', 'Male')}
+      ${statCard(females, fMean, fDist, '#ec4899', '♀', 'Female')}
+    </div>
+    ${gapHTML}
+    <div style="margin-top:.85rem">
+      <div style="font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:.45rem"><i class="fa-solid fa-table"></i> Subject-by-Subject Gender Comparison</div>
+      ${subTableHTML}
     </div>
   </div>`;
 }
@@ -5375,6 +6867,9 @@ function renderSummaryAnalytics() {
       }
     }
 
+    // ── 7. Gender analysis ──
+    const genderAnalysisHTML = buildGenderAnalysisSummaryHTML(clsStudentData, exam, isConsolidated, sourceExamObjs);
+
     // ── 6. Per-stream breakdown ──
     const clsStreams = streams.filter(st=>st.classId===cls.id);
     let streamsHTML = '';
@@ -5443,6 +6938,7 @@ function renderSummaryAnalytics() {
 
       ${mostImprovedHTML}
       ${mostImprovedSubHTML}
+      ${genderAnalysisHTML}
 
       ${streamsHTML ? `<div class="card sm-section">
         <h4 class="sm-section-title"> Per-Stream Breakdown</h4>
@@ -5789,7 +7285,7 @@ function handleStudentUpload(input) {
         const contact=String(row['ParentContact']||row['parent_contact']||'').trim();
         const parent =String(row['ParentName']||row['parent_name']||'').trim();
         if(!adm||!name){skipped++;return;}
-        if(students.find(s=>s.adm===adm)){skipped++;return;}
+        if(students.find(s=>s.adm.toLowerCase()===adm.toLowerCase()&&s.name.toLowerCase()===name.toLowerCase())){skipped++;return;}
         const cls=classes.find(c=>c.name.toLowerCase()===clsName.toLowerCase());
         // Match stream by name AND classId so "East" in Grade 7 ≠ "East" in Grade 8
         const str=streams.find(s=>s.name.toLowerCase()===strName.toLowerCase()&&(!cls||s.classId===cls.id))
@@ -6751,7 +8247,8 @@ function generateReport() {
       : null;
 
     if (exactRec) {
-      const bal = getRecordBalance(exactRec);
+      const prevBal = getPreviousBalance(stu.id, feeLookupTerm, feeLookupYear);
+      const bal = prevBal + getRecordBalance(exactRec);
       autoFeeBalance = bal;
       autoFeeStatus  = bal <= 0 ? 'FEES CLEARED <i class="fa-solid fa-circle-check"></i>' : `BALANCE: KES ${bal.toLocaleString()}`;
     } else {
@@ -6766,7 +8263,8 @@ function generateReport() {
           return (termOrder[b.term]||0) - (termOrder[a.term]||0);
         });
         const latestRec = stuRecs[0];
-        const bal = getRecordBalance(latestRec);
+        const prevBal = getPreviousBalance(stu.id, latestRec.term, latestRec.year);
+        const bal = prevBal + getRecordBalance(latestRec);
         autoFeeBalance = bal;
         autoFeeStatus  = bal <= 0 ? 'FEES CLEARED <i class="fa-solid fa-circle-check"></i>' : `BALANCE: KES ${bal.toLocaleString()}`;
       }
@@ -7697,6 +9195,7 @@ function renderMeritList() {
       <strong style="color:#1a6fb5;margin-right:.3rem">Points Grade Scale (out of 72):</strong>
       ${POINTS_GRADE_BANDS.slice().reverse().map(b=>`<span class="badge ${b.cls}" style="font-size:.65rem">${b.grade}: ${b.min}–${b.max}</span>`).join('')}
     </div>`;
+    const streamGenderAnalysis = buildGenderAnalysisMeritHTML(streamScored, examId);
     container.innerHTML = ptsLegendStream + `
       <h3 style="margin-bottom:.75rem;font-family:var(--font);font-weight:700">
          ${cls ? cls.name + ' &rsaquo; ' : ''}${str?.name||streamId} &mdash; Stream Merit List
@@ -7705,6 +9204,7 @@ function renderMeritList() {
       <div class="tbl-wrap">
         <table><thead>${headerRow}</thead><tbody>${bodyRows}</tbody></table>
       </div>
+      ${streamGenderAnalysis}
       ${subAnalysis}`;
     return;
   }
@@ -7742,6 +9242,7 @@ function renderMeritList() {
 
     const { headerRow: clsHdr, bodyRows: clsRows } = buildMeritTableHTML(classScored, examId, true);
     const clsSubAnalysis = buildSubjectAnalysisHTML(examId, classScored.map(s=>s.id));
+    const clsGenderAnalysis = buildGenderAnalysisMeritHTML(classScored, examId);
 
     let streamSections = '';
     if (type === 'class_overall_and_stream') {
@@ -7756,6 +9257,7 @@ function renderMeritList() {
         if (!strScored.length) return '';
         const { headerRow, bodyRows } = buildMeritTableHTML(strScored, examId, false);
         const strSubAnalysis = buildSubjectAnalysisHTML(examId, strScored.map(s=>s.id));
+        const strGenderAnalysis = buildGenderAnalysisMeritHTML(strScored, examId);
         return `
           <div style="margin-top:1.5rem">
             <h4 style="margin-bottom:.6rem;font-family:var(--font);font-weight:700;color:var(--secondary);font-size:.95rem">
@@ -7765,6 +9267,7 @@ function renderMeritList() {
             <div class="tbl-wrap">
               <table><thead>${headerRow}</thead><tbody>${bodyRows}</tbody></table>
             </div>
+            ${strGenderAnalysis}
             ${strSubAnalysis}
           </div>`;
       }).join('');
@@ -7780,6 +9283,7 @@ function renderMeritList() {
         <div class="tbl-wrap">
           <table><thead>${clsHdr}</thead><tbody>${clsRows}</tbody></table>
         </div>
+        ${clsGenderAnalysis}
         ${clsSubAnalysis}
         ${streamSections}
       </div>`;
@@ -7866,6 +9370,7 @@ function downloadAllReportsPDF() {
 const ES_DB_KEY = 'eduschedule_v1';
 
 const ES_DAY_NAMES = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+const ES_DAY_FULL  = ES_DAY_NAMES; // alias used by timetable view renderers
 
 let es_initialized = false;
 
@@ -8565,9 +10070,20 @@ async function es_generateTimetable() {
 
       // Also pull in stream-assigned teacher for this class (highest priority)
       const streamTeacher = es_getStreamAssignedTeacher(cls, sub.id);
-      const mergedTeachers = streamTeacher
-        ? [streamTeacher.id, ...teacherIds.filter(id => id !== streamTeacher.id)]
-        : teacherIds;
+      let mergedTeachers;
+      if (streamTeacher) {
+        // Rule: only the teacher assigned to this stream+subject may teach this slot.
+        // No other teacher should assist or be used as a fallback.
+        mergedTeachers = [streamTeacher.id];
+      } else {
+        mergedTeachers = teacherIds;
+        // Fallback: if STILL no teachers mapped, use all teachers so the slot
+        // is never left without a teacher due to missing subject assignments.
+        if (mergedTeachers.length === 0) {
+          mergedTeachers = es_state.teachers.map(t => t.id);
+        }
+      }
+
       const teachers = mergedTeachers;
       for (let i = 0; i < lpw; i++) {
         lessons.push({
@@ -8646,21 +10162,31 @@ async function es_generateTimetable() {
           if (daysWithoutThisSubject.length > 0 && daysWithoutThisSubject.includes(day) === false) continue;
         }
 
-        // Find available teacher
+        // ── Find available teacher ───────────────────────────────────────
+        // teacherUsage[tid][day][period] is set whenever a teacher is placed
+        // in ANY stream at that slot — this is the cross-stream collision guard.
+        // Constraint 1: a teacher cannot be in two streams at the same time.
+        // Constraint 2: a stream slot holds exactly one teacher (enforced by the
+        //               data model — only one teacherId per slot).
         let teacherId = null;
         const shuffledTeachers = [...lesson.teachers].sort(() => Math.random() - .5);
         for (const tid of shuffledTeachers) {
           const t = es_state.teachers.find(x => x.id === tid);
           if (!t) continue;
+          // Ensure usage map exists so the collision check below is reliable
+          if (!teacherUsage[tid])        teacherUsage[tid]        = {};
+          if (!teacherUsage[tid][day])   teacherUsage[tid][day]   = {};
+          // COLLISION GUARD: skip if teacher already placed anywhere at this slot
+          if (teacherUsage[tid][day][period]) continue;
           if (t.availability?.[day]?.[String(period+1)] === false) continue;
-          if (teacherUsage[tid]?.[day]?.[period]) continue;
-          const dayLoad  = Object.values(teacherUsage[tid]?.[day] || {}).filter(Boolean).length;
-          if (dayLoad >= t.maxPerDay) continue;
-          const weekLoad = Object.values(teacherUsage[tid]||{})
+          const dayLoad  = Object.values(teacherUsage[tid][day]).filter(Boolean).length;
+          if (dayLoad >= (t.maxPerDay || 6)) continue;
+          const weekLoad = Object.values(teacherUsage[tid])
             .reduce((s, dObj) => s + Object.values(dObj).filter(Boolean).length, 0);
-          if (weekLoad >= t.maxPerWeek) continue;
+          if (weekLoad >= (t.maxPerWeek || 25)) continue;
           teacherId = tid; break;
         }
+        // ────────────────────────────────────────────────────────────────
 
         // Find room
         let roomId = null;
@@ -9080,6 +10606,32 @@ function es_dragDrop(e, classId, day, period) {
   es_saveData(); es_runConflictCheck(); es_renderTimetableView();
 }
 
+/* ── Helper: restrict teacher dropdown in lesson-edit modal to the stream-assigned teacher ── */
+function es_filterEditTeachers(classId, subjectId) {
+  const teacherSel = document.getElementById('es_lessonEditTeacher');
+  if (!teacherSel) return;
+
+  let allowedTeachers = es_state.teachers; // default: all teachers
+
+  if (classId && subjectId) {
+    const cls = es_state.classes.find(c => c.id === classId);
+    if (cls) {
+      const streamTeacher = es_getStreamAssignedTeacher(cls, subjectId);
+      if (streamTeacher) {
+        // A specific teacher is assigned to this stream+subject — show only them
+        allowedTeachers = [streamTeacher];
+      }
+    }
+  }
+
+  const currentVal = teacherSel.value;
+  teacherSel.innerHTML =
+    '<option value="">— No Teacher —</option>' +
+    allowedTeachers.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+  // Restore previous selection if still valid
+  if (allowedTeachers.find(t => t.id === currentVal)) teacherSel.value = currentVal;
+}
+
 /* =====================================================
    LESSON EDIT MODAL
 ===================================================== */
@@ -9093,19 +10645,23 @@ function es_openLessonEdit(classId, day, period) {
 
   document.getElementById('es_lessonEditSubject').innerHTML =
     '<option value="">— Empty —</option>' + es_state.subjects.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
-  document.getElementById('es_lessonEditTeacher').innerHTML =
-    '<option value="">— No Teacher —</option>' + es_state.teachers.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
   document.getElementById('es_lessonEditRoom').innerHTML =
     '<option value="">— No Room —</option>' + es_state.rooms.map(r => `<option value="${r.id}">${r.name} (${r.type})</option>`).join('');
+
+  // Re-filter teacher dropdown whenever the subject changes in the edit modal
+  const _subSelEl = document.getElementById('es_lessonEditSubject');
+  _subSelEl.onchange = () => es_filterEditTeachers(classId, _subSelEl.value);
 
   const slot = es_state.timetable[classId]?.[day]?.[period];
   if (slot) {
     document.getElementById('es_lessonEditSubject').value = slot.subjectId || '';
+    es_filterEditTeachers(classId, slot.subjectId || '');
     document.getElementById('es_lessonEditTeacher').value = slot.teacherId || '';
     document.getElementById('es_lessonEditRoom').value    = slot.roomId    || '';
     document.getElementById('es_lessonEditLocked').checked = !!slot.locked;
   } else {
     document.getElementById('es_lessonEditSubject').value = '';
+    es_filterEditTeachers(classId, '');
     document.getElementById('es_lessonEditTeacher').value = '';
     document.getElementById('es_lessonEditRoom').value    = '';
     document.getElementById('es_lessonEditLocked').checked = false;
@@ -9120,6 +10676,18 @@ function es_saveLessonEdit() {
   const teacherId = document.getElementById('es_lessonEditTeacher').value;
   const roomId    = document.getElementById('es_lessonEditRoom').value;
   const locked    = document.getElementById('es_lessonEditLocked').checked;
+
+  // Enforce stream assignment: only the teacher assigned to this stream+subject may be saved.
+  if (subjectId && teacherId) {
+    const cls = es_state.classes.find(c => c.id === classId);
+    if (cls) {
+      const streamTeacher = es_getStreamAssignedTeacher(cls, subjectId);
+      if (streamTeacher && streamTeacher.id !== teacherId) {
+        es_toast(`<i class="fa-solid fa-circle-xmark"></i> Only ${streamTeacher.name} is assigned to teach this subject in this stream.`, 'error');
+        return;
+      }
+    }
+  }
 
   if (!es_state.timetable[classId]) es_state.timetable[classId] = {};
   if (!es_state.timetable[classId][day]) es_state.timetable[classId][day] = {};
@@ -9933,8 +11501,8 @@ function go(sec, el) {
   if (sec === 'livechat')   { initLiveChatSection(); }
   if (sec === 'exambuilder') { /* handled by EB module DOMContentLoaded wrapper */ }
   if (sec === 'timetable')  {
-    // Initialize EduSchedule timetable sub-app
-    if (typeof es_initApp === 'function') es_initApp();
+    // Fire auto-sync event so the timetable pulls latest school data
+    document.dispatchEvent(new CustomEvent('tt_sectionVisible'));
   }
 }
 
@@ -9965,7 +11533,7 @@ const TRANSLATIONS = {
     ph_exams_sub:   'Create, manage, upload marks, and analyse examinations.',
     tab_create:        'Create Exam',
     tab_examlist:      'Exam List',
-    tab_examtimetable: '<i class="fa-solid fa-calendar-days"></i> Exam Timetable',
+    tab_examtimetable: 'Exam Timetable',
     tab_upload:        'Upload Marks',
     tab_analyse:       'Analyse',
     tab_merit:         'Merit List',
@@ -10026,7 +11594,7 @@ const TRANSLATIONS = {
     ph_exams_sub:   'Unda, simamia, pakia alama na uchanganue mitihani.',
     tab_create:        'Unda Mtihani',
     tab_examlist:      'Orodha ya Mitihani',
-    tab_examtimetable: '<i class="fa-solid fa-calendar-days"></i> Ratiba ya Mtihani',
+    tab_examtimetable: 'Ratiba ya Mtihani',
     tab_upload:        'Pakia Alama',
     tab_analyse:       'Uchanganuzi',
     tab_merit:         'Orodha ya Sifa',
@@ -10126,7 +11694,7 @@ function applyTranslations() {
   const T = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
   I18N_MAP.forEach(({ key, sel }) => {
     const el = document.querySelector(sel);
-    if (el && T[key] !== undefined) el.textContent = T[key];
+    if (el && T[key] !== undefined) el.innerHTML = T[key];
   });
   // Also update topbar title to current section
   const activeNav = document.querySelector('.sn.active span');
@@ -10145,12 +11713,49 @@ function initLang() {
 //  FEES MANAGEMENT MODULE — Charanas Analyzer
 // ══════════════════════════════════════════════════════════
 
-const K_FEES_STRUCT = 'ei_fee_structures';
-const K_FEES_RECORDS = 'ei_fee_records';
+const K_FEES_STRUCT        = 'ei_fee_structures';
+const K_FEES_RECORDS       = 'ei_fee_records';
+const K_FEES_SYNC_CLASSES  = 'ei_fee_sync_classes'; // array of classIds enabled for fees
+const K_FEES_SYNC_STREAMS  = 'ei_fee_sync_streams'; // array of streamIds enabled for fees
 
-let feeStructures = [];   // [{id,classId,term,year,totalFee,breakdown:[{item,amount}]}]
+let feeStructures = [];   // [{id,classId,streamId?,term,year,totalFee,breakdown:[{item,amount}]}]
+                          //   streamId present = stream-specific override; absent = whole class
 let feeRecords = [];      // [{id,studentId,classId,term,year,totalFee,payments:[{id,receiptNo,date,amount,mode,notes,balanceBefore,balanceAfter}]}]
 let lastReceiptHtml = '';
+
+// ── Fee Sync Helpers ──
+function getFeeSyncedClassIds() {
+  try {
+    const v = localStorage.getItem(schoolPrefix() + K_FEES_SYNC_CLASSES);
+    if (v === null) return null; // null = never configured = all classes
+    return JSON.parse(v);
+  } catch { return null; }
+}
+function getFeeSyncedStreamIds() {
+  try {
+    const v = localStorage.getItem(schoolPrefix() + K_FEES_SYNC_STREAMS);
+    if (v === null) return null;
+    return JSON.parse(v);
+  } catch { return null; }
+}
+function saveFeeSyncSettings(classIds, streamIds) {
+  localStorage.setItem(schoolPrefix() + K_FEES_SYNC_CLASSES, JSON.stringify(classIds));
+  localStorage.setItem(schoolPrefix() + K_FEES_SYNC_STREAMS, JSON.stringify(streamIds));
+}
+
+// Returns classes visible in fees (respects sync settings)
+function getFeeVisibleClasses() {
+  const syncedIds = getFeeSyncedClassIds();
+  if (!syncedIds) return classes; // all if never configured
+  return classes.filter(c => syncedIds.includes(c.id));
+}
+// Returns streams visible in fees
+function getFeeVisibleStreams(classId) {
+  const syncedStreamIds = getFeeSyncedStreamIds();
+  const base = classId ? streams.filter(s => s.classId === classId) : streams;
+  if (!syncedStreamIds) return base;
+  return base.filter(s => syncedStreamIds.includes(s.id));
+}
 
 function loadFees() {
   try { feeStructures = JSON.parse(localStorage.getItem(K_FEES_STRUCT)) || []; } catch { feeStructures = []; }
@@ -10175,7 +11780,8 @@ function genReceiptNo() {
 function getOrCreateFeeRecord(studentId, classId, term, year) {
   let rec = feeRecords.find(r => r.studentId===studentId && r.term===term && String(r.year)===String(year));
   if (!rec) {
-    const struct = getFeeStructure(classId, term, year);
+    const stu = students.find(s => s.id === studentId);
+    const struct = stu ? getFeeStructureForStudent(stu, term, year) : getFeeStructure(classId, term, year);
     rec = { id: uid(), studentId, classId, term, year: String(year), totalFee: struct ? struct.totalFee : 0, payments: [] };
     feeRecords.push(rec);
     saveFees();
@@ -10183,8 +11789,20 @@ function getOrCreateFeeRecord(studentId, classId, term, year) {
   return rec;
 }
 
-function getFeeStructure(classId, term, year) {
-  return feeStructures.find(f => f.classId===classId && f.term===term && String(f.year)===String(year));
+function getFeeStructure(classId, term, year, streamId) {
+  // Stream-specific structure takes priority if streamId provided
+  if (streamId) {
+    const streamSpecific = feeStructures.find(f =>
+      f.classId===classId && f.streamId===streamId && f.term===term && String(f.year)===String(year));
+    if (streamSpecific) return streamSpecific;
+  }
+  // Fall back to class-level structure (no streamId = applies to whole class)
+  return feeStructures.find(f => f.classId===classId && !f.streamId && f.term===term && String(f.year)===String(year));
+}
+
+// Resolve the right fee structure for a student (checks stream first, then class)
+function getFeeStructureForStudent(stu, term, year) {
+  return getFeeStructure(stu.classId, term, year, stu.streamId || null);
 }
 
 function getRecordTotalPaid(rec) {
@@ -10192,6 +11810,47 @@ function getRecordTotalPaid(rec) {
 }
 function getRecordBalance(rec) {
   return parseFloat(rec.totalFee||0) - getRecordTotalPaid(rec);
+}
+
+// Returns the cumulative unpaid balance from all terms BEFORE the given term/year for a student.
+// Includes both: fee records (fees - payments) AND fee structures for prior terms with no record yet.
+function getPreviousBalance(studentId, term, year) {
+  const termOrder = { 'Term 1': 1, 'Term 2': 2, 'Term 3': 3 };
+  const student = students.find(s => s.id === studentId);
+
+  const isPrior = (r) => {
+    const ry = String(r.year), cy = String(year);
+    if (ry < cy) return true;
+    if (ry === cy && (termOrder[r.term] || 0) < (termOrder[term] || 0)) return true;
+    return false;
+  };
+
+  // Sum balances from actual fee records (term fee - payments made)
+  const recordTotal = feeRecords
+    .filter(r => r.studentId === studentId && isPrior(r))
+    .reduce((sum, r) => sum + getRecordBalance(r), 0);
+
+  // Also add full fee from structures where no record exists yet (nothing paid at all)
+  // Use stream-aware lookup: for each prior term where no record exists, get the right structure
+  let structTotal = 0;
+  if (student) {
+    // Collect unique prior term+year combos from all structures for this class
+    const priorTermYears = [...new Set(
+      feeStructures
+        .filter(f => f.classId === student.classId && isPrior(f))
+        .map(f => f.term + '|' + f.year)
+    )];
+    priorTermYears.forEach(key => {
+      const [t, y] = key.split('|');
+      const hasRecord = feeRecords.some(r => r.studentId===studentId && r.term===t && String(r.year)===y);
+      if (!hasRecord) {
+        const struct = getFeeStructureForStudent(student, t, y);
+        if (struct) structTotal += parseFloat(struct.totalFee || 0);
+      }
+    });
+  }
+
+  return recordTotal + structTotal;
 }
 
 // ── Get fee data for a student (for a given term/year) ──
@@ -10244,6 +11903,7 @@ function openFeesTab(tabId, btn) {
   if (tabId === 'tabFeeStudents')   renderStudentBalances();
   if (tabId === 'tabFeeReminders')  renderFeeReminders();
   if (tabId === 'tabFeeReceipts')   renderReceiptsLog();
+  if (tabId === 'tabFeeSync')       renderFeeSyncSettings();
   if (tabId === 'tabStaffSalary') {
     renderStaffSalaryTable();
     renderBOMSalaryTable();
@@ -10397,10 +12057,11 @@ function populateFeesDropdowns() {
   const teacherStreamIds = isTeacher ? getClassTeacherStreamIds(currentUser.teacherId) : [];
   const teacherClassIds  = isTeacher ? [...new Set(teacherStreamIds.map(sid => { const s=streams.find(x=>x.id===sid); return s?s.classId:null; }).filter(Boolean))] : null;
 
-  // Determine visible classes
+  // Determine visible classes (apply fee sync settings, then teacher filter)
+  const feeSyncedClasses = getFeeVisibleClasses();
   const visibleClasses = teacherClassIds
-    ? classes.filter(c => teacherClassIds.includes(c.id))
-    : classes;
+    ? feeSyncedClasses.filter(c => teacherClassIds.includes(c.id))
+    : feeSyncedClasses;
 
   // Collect all years from structures + records
   const years = [...new Set([
@@ -10424,6 +12085,8 @@ function populateFeesDropdowns() {
   ['fstrClass','fpClass'].forEach(id => {
     const el = document.getElementById(id); if (el) el.innerHTML = strictClassOptions;
   });
+  // Repopulate fstrStream if a class is already selected
+  onFstrClassChange();
 
   // Year dropdowns for payment form
   const yearSelectOptions = years.map(y=>`<option value="${y}">${y}</option>`).join('');
@@ -10442,6 +12105,25 @@ function populateFeesDropdowns() {
     const el = document.getElementById(id);
     if (el) { for (const opt of el.options) { if (opt.value === curYear) { opt.selected = true; break; } } }
   });
+}
+
+// ── Populate Staff Dropdowns (Finances: Salary, Payslips) ──────────
+function populateStaffDropdowns() {
+  const staff = loadStaffDetails();
+  const opts  = '<option value="">— Select Staff —</option>' +
+    staff.map(s => `<option value="${s.id}">${s.name}${s.role ? ' — ' + s.role : ''}</option>`).join('');
+  const ss = document.getElementById('ssStaff');
+  if (ss) { const v = ss.value; ss.innerHTML = opts; if (v) ss.value = v; }
+  const ps = document.getElementById('psStaff');
+  if (ps) { const v = ps.value; ps.innerHTML = opts; if (v) ps.value = v; }
+  const ph = document.getElementById('psHistStaff');
+  if (ph) {
+    const v = ph.value;
+    ph.innerHTML = '<option value="">All Staff</option>' +
+      staff.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+    if (v) ph.value = v;
+  }
+  if (typeof sdpPopulateSalaryStaffDropdown === 'function') sdpPopulateSalaryStaffDropdown();
 }
 
 // ── Init Fees Section ──
@@ -10470,6 +12152,7 @@ function initFeesSection() {
     tbFeeReceipts  : isFullFees,
     tbFeeImport    : isFullFees,
     tbFeeStudents  : isFullFees || isClassTch,
+    tbFeeSync      : isFullFees,
     tbFeeOverview  : true, // always
   };
   Object.entries(tabs).forEach(([id, show]) => {
@@ -10490,6 +12173,100 @@ function initFeesSection() {
   renderFeeOverview();
 }
 
+
+// ═══════════════════════════════════════════
+// FEE CLASS & STREAM SYNC SETTINGS
+// ═══════════════════════════════════════════
+function renderFeeSyncSettings() {
+  const container = document.getElementById('feeSyncSettingsBody');
+  if (!container) return;
+
+  const syncedClassIds  = getFeeSyncedClassIds();  // null = all enabled
+  const syncedStreamIds = getFeeSyncedStreamIds(); // null = all enabled
+
+  let html = `
+    <p style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">
+      Select which classes and streams appear in the Fees section.
+      Deselected classes/streams will be hidden from all fee forms and reports.
+    </p>`;
+
+  if (!classes.length) {
+    html += '<p style="color:var(--muted)">No classes found. Add classes first.</p>';
+    container.innerHTML = html;
+    return;
+  }
+
+  classes.forEach(cls => {
+    const clsEnabled = !syncedClassIds || syncedClassIds.includes(cls.id);
+    const clsStreams  = streams.filter(s => s.classId === cls.id);
+    html += `
+      <div class="fee-sync-class-block" style="margin-bottom:1.2rem;padding:1rem;border:1px solid var(--border);border-radius:8px">
+        <label style="display:flex;align-items:center;gap:.6rem;font-weight:700;font-size:.95rem;cursor:pointer;margin-bottom:.5rem">
+          <input type="checkbox" class="fee-sync-cls-chk" data-cls-id="${cls.id}"
+            ${clsEnabled ? 'checked' : ''}
+            onchange="onFeeSyncClassToggle(this)"/>
+          <i class="fa-solid fa-school" style="color:var(--primary)"></i> ${cls.name}
+        </label>`;
+
+    if (clsStreams.length > 0) {
+      html += `<div class="fee-sync-streams" id="feeSyncStreams_${cls.id}" style="margin-left:1.8rem;display:flex;flex-wrap:wrap;gap:.5rem">`;
+      clsStreams.forEach(s => {
+        const sEnabled = !syncedStreamIds || syncedStreamIds.includes(s.id);
+        html += `
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.85rem;cursor:pointer;
+                        background:var(--surface);padding:.3rem .7rem;border-radius:6px;border:1px solid var(--border)">
+            <input type="checkbox" class="fee-sync-str-chk" data-str-id="${s.id}"
+              ${sEnabled && clsEnabled ? 'checked' : ''} ${!clsEnabled ? 'disabled' : ''}/>
+            <i class="fa-solid fa-layer-group" style="font-size:.75rem;color:var(--muted)"></i> ${s.name}
+          </label>`;
+      });
+      html += '</div>';
+    } else {
+      html += `<div style="margin-left:1.8rem;font-size:.8rem;color:var(--muted)">No streams defined for this class.</div>`;
+    }
+    html += '</div>';
+  });
+
+  html += `
+    <div style="display:flex;gap:.5rem;margin-top:.5rem;flex-wrap:wrap">
+      <button class="btn btn-primary btn-sm" onclick="applyFeeSyncSettings()">
+        <i class="fa-solid fa-floppy-disk"></i> Save Sync Settings
+      </button>
+      <button class="btn btn-outline btn-sm" onclick="resetFeeSyncSettings()">
+        <i class="fa-solid fa-rotate-left"></i> Enable All (Reset)
+      </button>
+    </div>`;
+
+  container.innerHTML = html;
+}
+
+function onFeeSyncClassToggle(chk) {
+  const clsId = chk.dataset.clsId;
+  const block  = document.getElementById('feeSyncStreams_' + clsId);
+  if (!block) return;
+  block.querySelectorAll('.fee-sync-str-chk').forEach(s => {
+    s.disabled = !chk.checked;
+    if (!chk.checked) s.checked = false;
+    else s.checked = true;
+  });
+}
+
+function applyFeeSyncSettings() {
+  const classIds  = [...document.querySelectorAll('.fee-sync-cls-chk:checked')].map(el => el.dataset.clsId);
+  const streamIds = [...document.querySelectorAll('.fee-sync-str-chk:checked')].map(el => el.dataset.strId);
+  saveFeeSyncSettings(classIds, streamIds);
+  populateFeesDropdowns();
+  showToast('Fee sync settings saved <i class="fa-solid fa-check"></i>', 'success');
+}
+
+function resetFeeSyncSettings() {
+  localStorage.removeItem(schoolPrefix() + K_FEES_SYNC_CLASSES);
+  localStorage.removeItem(schoolPrefix() + K_FEES_SYNC_STREAMS);
+  renderFeeSyncSettings();
+  populateFeesDropdowns();
+  showToast('All classes and streams enabled for fees', 'info');
+}
+
 // ═══════════════════════════════════════════
 // OVERVIEW
 // ═══════════════════════════════════════════
@@ -10505,7 +12282,10 @@ function renderFeeOverview() {
     ? [...new Set(getClassTeacherStreamIds(currentUser.teacherId).map(sid => { const s=streams.find(x=>x.id===sid); return s?s.classId:null; }).filter(Boolean))]
     : null;
 
-  let visibleClasses = teacherClassIds ? classes.filter(c => teacherClassIds.includes(c.id)) : classes;
+  const feeSyncedCls = getFeeVisibleClasses();
+  let visibleClasses = teacherClassIds
+    ? feeSyncedCls.filter(c => teacherClassIds.includes(c.id))
+    : feeSyncedCls;
   if (filterClass) visibleClasses = visibleClasses.filter(c => c.id === filterClass);
 
   // Build summary per class
@@ -10615,9 +12395,20 @@ function addFstrBreakdownRow() {
   container.appendChild(div);
 }
 
+function onFstrClassChange() {
+  const classId = document.getElementById('fstrClass')?.value;
+  const streamSel = document.getElementById('fstrStream');
+  if (!streamSel) return;
+  const classStreams = getFeeVisibleStreams(classId);
+  streamSel.innerHTML = '<option value="">— Whole Class (no stream split) —</option>' +
+    classStreams.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+}
+
 function clearFstrForm() {
   document.getElementById('fstrEditId').value = '';
   document.getElementById('fstrClass').value = '';
+  const streamSel = document.getElementById('fstrStream');
+  if (streamSel) streamSel.innerHTML = '<option value="">— Whole Class (no stream split) —</option>';
   document.getElementById('fstrTotal').value = '';
   document.getElementById('fstrBreakdownRows').innerHTML = '';
 }
@@ -10626,11 +12417,12 @@ function saveFeeStructure() {
   const r = currentUser && currentUser.role;
   if (!(r==='superadmin'||r==='admin'||r==='principal'||r==='bursar')) { showToast('Only administrators can edit fee structures','error'); return; }
   loadFees();
-  const editId  = document.getElementById('fstrEditId').value;
-  const classId = document.getElementById('fstrClass').value;
-  const term    = document.getElementById('fstrTerm').value;
-  const year    = document.getElementById('fstrYear').value;
-  const total   = parseFloat(document.getElementById('fstrTotal').value);
+  const editId   = document.getElementById('fstrEditId').value;
+  const classId  = document.getElementById('fstrClass').value;
+  const streamId = document.getElementById('fstrStream')?.value || '';
+  const term     = document.getElementById('fstrTerm').value;
+  const year     = document.getElementById('fstrYear').value;
+  const total    = parseFloat(document.getElementById('fstrTotal').value);
 
   if (!classId || !term || !year || isNaN(total) || total <= 0) {
     showToast('Please fill Class, Term, Year and a valid Total Fee', 'error'); return;
@@ -10644,14 +12436,18 @@ function saveFeeStructure() {
     if (item && amt > 0) breakdown.push({ item, amount: amt });
   });
 
+  const structObj = { classId, term, year: String(year), totalFee: total, breakdown };
+  if (streamId) structObj.streamId = streamId; // stream-specific
+
   if (editId) {
     const i = feeStructures.findIndex(f => f.id === editId);
-    if (i > -1) feeStructures[i] = { ...feeStructures[i], classId, term, year, totalFee: total, breakdown };
+    if (i > -1) feeStructures[i] = { ...feeStructures[i], ...structObj };
   } else {
-    // Check for duplicate
-    const dup = feeStructures.find(f => f.classId===classId && f.term===term && String(f.year)===String(year));
-    if (dup) { showToast('A structure already exists for this class/term/year. Edit it instead.', 'error'); return; }
-    feeStructures.push({ id: uid(), classId, term, year: String(year), totalFee: total, breakdown });
+    // Check for duplicate (same class + stream combo)
+    const dup = feeStructures.find(f =>
+      f.classId===classId && (f.streamId||'')===streamId && f.term===term && String(f.year)===String(year));
+    if (dup) { showToast('A structure already exists for this class/stream/term/year. Edit it instead.', 'error'); return; }
+    feeStructures.push({ id: uid(), ...structObj });
   }
 
   saveFees();
@@ -10668,13 +12464,18 @@ function renderFeeStructureList() {
   if (!feeStructures.length) { el.innerHTML = '<p style="color:var(--muted)">No fee structures yet.</p>'; return; }
 
   el.innerHTML = feeStructures.map(f => {
-    const cls = classes.find(c => c.id === f.classId);
+    const cls    = classes.find(c => c.id === f.classId);
+    const stream = f.streamId ? streams.find(s => s.id === f.streamId) : null;
+    const scopeLabel = stream
+      ? `<span class="badge b-teal" style="font-size:.65rem;margin-left:.4rem"><i class="fa-solid fa-layer-group"></i> ${stream.name}</span>`
+      : `<span class="badge b-blue" style="font-size:.65rem;margin-left:.4rem">Whole Class</span>`;
     return `
       <div class="fee-struct-item">
         <div class="fsi-head">
           <div>
             <strong>${cls?.name || 'Unknown Class'}</strong>
-            <span class="badge b-blue" style="font-size:.65rem;margin-left:.4rem">${f.term} ${f.year}</span>
+            ${scopeLabel}
+            <span class="badge" style="font-size:.65rem;margin-left:.2rem;background:var(--surface);color:var(--muted)">${f.term} ${f.year}</span>
           </div>
           <strong style="color:var(--primary)">KES ${parseFloat(f.totalFee).toLocaleString()}</strong>
         </div>
@@ -10698,6 +12499,12 @@ function editFeeStructure(id) {
   document.getElementById('fstrTerm').value   = f.term;
   document.getElementById('fstrYear').value   = f.year;
   document.getElementById('fstrTotal').value  = f.totalFee;
+  // Populate streams for this class, then set selected stream
+  onFstrClassChange();
+  setTimeout(() => {
+    const streamSel = document.getElementById('fstrStream');
+    if (streamSel && f.streamId) streamSel.value = f.streamId;
+  }, 50);
   const container = document.getElementById('fstrBreakdownRows');
   container.innerHTML = '';
   (f.breakdown||[]).forEach(b => {
@@ -10763,11 +12570,18 @@ function onFpStudentChange() {
     if (card) card.style.display = 'none'; return;
   }
 
-  const struct = getFeeStructure(classId, term, year);
+  const stu_fp  = students.find(s => s.id === stuId);
+  const struct  = stu_fp ? getFeeStructureForStudent(stu_fp, term, year) : getFeeStructure(classId, term, year);
   const rec    = feeRecords.find(r => r.studentId===stuId && r.term===term && String(r.year)===String(year));
   const totalFee = rec ? parseFloat(rec.totalFee||0) : (struct ? parseFloat(struct.totalFee||0) : 0);
   const paid     = rec ? getRecordTotalPaid(rec) : 0;
-  const bal      = totalFee - paid;
+  const prevBal  = getPreviousBalance(stuId, term, year);
+  const bal      = prevBal + totalFee - paid;
+
+  const prevBalEl    = document.getElementById('fpPrevBalance');
+  const prevBalRowEl = document.getElementById('fpPrevBalRow');
+  if (prevBalEl) prevBalEl.textContent = `KES ${prevBal.toLocaleString()}`;
+  if (prevBalRowEl) prevBalRowEl.style.display = prevBal > 0 ? 'flex' : 'none';
 
   document.getElementById('fpTotalFee').textContent  = `KES ${totalFee.toLocaleString()}`;
   document.getElementById('fpAmountPaid').textContent = `KES ${paid.toLocaleString()}`;
@@ -10793,11 +12607,12 @@ function recordFeePayment() {
   if (!classId) { showToast('Please select a class', 'error'); return; }
   if (amount <= 0) { showToast('Please enter a valid amount', 'error'); return; }
 
-  const struct   = getFeeStructure(classId, term, year);
+  const stu_pay  = students.find(s => s.id === stuId);
+  const struct   = stu_pay ? getFeeStructureForStudent(stu_pay, term, year) : getFeeStructure(classId, term, year);
   const totalFee = struct ? parseFloat(struct.totalFee||0) : 0;
 
   if (!totalFee) {
-    showToast('No fee structure set for this class/term/year. Create one first.', 'error'); return;
+    showToast('No fee structure set for this class/stream/term/year. Create one first.', 'error'); return;
   }
 
   // Get or create record
@@ -10809,16 +12624,17 @@ function recordFeePayment() {
   // Update totalFee from structure in case it changed
   rec.totalFee = totalFee;
 
-  const balBefore = getRecordBalance(rec);
+  const prevBal   = getPreviousBalance(stuId, term, year);
+  const balBefore = prevBal + getRecordBalance(rec);
   const receiptNo = genReceiptNo();
-  const payment = { id: uid(), receiptNo, date, amount, mode, notes, balanceBefore: balBefore, balanceAfter: balBefore - amount };
+  const payment = { id: uid(), receiptNo, date, amount, mode, notes, prevBal, balanceBefore: balBefore, balanceAfter: balBefore - amount };
   rec.payments.push(payment);
   saveFees();
 
   // Build and show receipt
   const stu = students.find(s => s.id === stuId);
   const cls = classes.find(c => c.id === classId);
-  lastReceiptHtml = buildReceiptHTML({ stu, cls, term, year, totalFee, payment, balBefore, balAfter: balBefore - amount, receiptNo, date, mode, notes, amount, schoolName: settings.schoolName || 'School' });
+  lastReceiptHtml = buildReceiptHTML({ stu, cls, term, year, totalFee, payment, prevBal, balBefore, balAfter: balBefore - amount, receiptNo, date, mode, notes, amount, schoolName: settings.schoolName || 'School' });
 
   const previewEl = document.getElementById('receiptPreview');
   if (previewEl) previewEl.innerHTML = lastReceiptHtml;
@@ -10835,7 +12651,10 @@ function recordFeePayment() {
   setTimeout(() => printLastReceipt(), 400);
 }
 
-function buildReceiptHTML({ stu, cls, term, year, totalFee, payment, balBefore, balAfter, receiptNo, date, mode, notes, amount, schoolName }) {
+function buildReceiptHTML({ stu, cls, term, year, totalFee, payment, prevBal, balBefore, balAfter, receiptNo, date, mode, notes, amount, schoolName }) {
+  // prevBal: balance carried from previous term(s)
+  // balBefore: total balance before this payment = prevBal + this term's unpaid fee
+  if (prevBal === undefined) prevBal = 0;
   const d = new Date(date);
   const dateStr = d.toLocaleDateString('en-KE', { day:'2-digit', month:'long', year:'numeric' });
   const status = balAfter <= 0 ? '<span style="color:#16a34a;font-weight:700"><i class="fa-solid fa-circle-check"></i> FEES CLEARED</span>' : `<span style="color:#dc2626;font-weight:700"><i class="fa-solid fa-triangle-exclamation"></i>️ BALANCE: KES ${balAfter.toLocaleString()}</span>`;
@@ -10860,8 +12679,9 @@ function buildReceiptHTML({ stu, cls, term, year, totalFee, payment, balBefore, 
         <div class="rcpt-row"><span class="rcpt-lbl">Admission No.</span><span class="rcpt-val">${stu?.adm || '—'}</span></div>
         <div class="rcpt-row"><span class="rcpt-lbl">Class</span><span class="rcpt-val">${cls?.name || '—'}</span></div>
         <div class="rcpt-row"><span class="rcpt-lbl">Term / Year</span><span class="rcpt-val">${term} — ${year}</span></div>
-        <div class="rcpt-row"><span class="rcpt-lbl">Total Fee</span><span class="rcpt-val">KES ${parseFloat(totalFee).toLocaleString()}</span></div>
-        <div class="rcpt-row"><span class="rcpt-lbl">Previous Balance</span><span class="rcpt-val" style="color:#dc2626">KES ${parseFloat(balBefore).toLocaleString()}</span></div>
+        <div class="rcpt-row"><span class="rcpt-lbl">This Term's Fee</span><span class="rcpt-val">KES ${parseFloat(totalFee).toLocaleString()}</span></div>
+        ${prevBal > 0 ? `<div class="rcpt-row"><span class="rcpt-lbl">Previous Balance</span><span class="rcpt-val" style="color:#dc2626">KES ${parseFloat(prevBal).toLocaleString()}</span></div>` : ''}
+        <div class="rcpt-row"><span class="rcpt-lbl">Total Balance Before Payment</span><span class="rcpt-val" style="color:#dc2626;font-weight:700">KES ${parseFloat(balBefore).toLocaleString()}</span></div>
         <div class="rcpt-divider-sm"></div>
         <div class="rcpt-row rcpt-paid-row">
           <span class="rcpt-lbl">Amount Paid</span>
@@ -10924,6 +12744,7 @@ function renderStudentBalances() {
   const filterTerm   = document.getElementById('fsbTerm')?.value   || '';
   const filterYear   = document.getElementById('fsbYear')?.value   || '';
   const filterStatus = document.getElementById('fsbStatus')?.value || '';
+  const filterMinBal = parseFloat(document.getElementById('fsbMinBalance')?.value || '0') || 0;
   const search       = (document.getElementById('fsbSearch')?.value || '').toLowerCase();
 
   const isTeacher = currentUser && currentUser.role === 'teacher';
@@ -10944,37 +12765,64 @@ function renderStudentBalances() {
     if (teacherClassIds && !teacherClassIds.includes(rec.classId)) return;
 
     const stu = students.find(s => s.id === rec.studentId); if (!stu) return;
+    // Skip if class not synced to fees
+    const feeSyncCls = getFeeSyncedClassIds();
+    if (feeSyncCls && !feeSyncCls.includes(rec.classId)) return;
+    // Skip if student's stream not synced
+    const feeSyncStr = getFeeSyncedStreamIds();
+    if (feeSyncStr && stu.streamId && !feeSyncStr.includes(stu.streamId)) return;
     const cls = classes.find(c => c.id === rec.classId);
     const paid = getRecordTotalPaid(rec);
+    const prevBal = getPreviousBalance(rec.studentId, rec.term, rec.year);
     const bal  = getRecordBalance(rec);
+    const cumBal = prevBal + bal;
     const pct  = rec.totalFee > 0 ? Math.round(paid/rec.totalFee*100) : 0;
-    let statusKey = bal <= 0 ? 'cleared' : paid > 0 ? 'partial' : 'unpaid';
+    const cumBalRounded = Math.round(cumBal * 100) / 100;
+    let statusKey = cumBalRounded <= 0 ? 'cleared' : paid > 0 ? 'partial' : 'unpaid';
 
     if (filterStatus && statusKey !== filterStatus) return;
+    if (filterMinBal > 0 && cumBal < filterMinBal) return;
     if (search && !stu.name.toLowerCase().includes(search) && !stu.adm.toLowerCase().includes(search)) return;
 
-    rows.push({ rec, stu, cls, paid, bal, pct, statusKey });
+    rows.push({ rec, stu, cls, paid, bal, cumBal, pct, statusKey });
   });
 
   // Also add students with NO record if a structure exists for them
+  const sbFeeSyncCls = getFeeSyncedClassIds();
+  const sbFeeSyncStr = getFeeSyncedStreamIds();
   students.forEach(stu => {
     const clsId = stu.classId;
     if (teacherClassIds && !teacherClassIds.includes(clsId)) return;
     if (filterClass && clsId !== filterClass) return;
+    // Respect fee sync settings
+    if (sbFeeSyncCls && !sbFeeSyncCls.includes(clsId)) return;
+    if (sbFeeSyncStr && stu.streamId && !sbFeeSyncStr.includes(stu.streamId)) return;
 
-    const structs = feeStructures.filter(f => f.classId===clsId
-      && (!filterTerm || f.term===filterTerm)
-      && (!filterYear || String(f.year)===filterYear));
+    // Find unique term+year combos where a structure applies to this student
+    const termYearSet = new Set();
+    feeStructures
+      .filter(f => f.classId===clsId
+        && (!filterTerm || f.term===filterTerm)
+        && (!filterYear || String(f.year)===filterYear))
+      .forEach(f => termYearSet.add(f.term + '|' + f.year));
 
-    structs.forEach(struct => {
-      const exists = feeRecords.some(r => r.studentId===stu.id && r.term===struct.term && String(r.year)===struct.year);
+    termYearSet.forEach(key => {
+      const [t, y] = key.split('|');
+      const exists = feeRecords.some(r => r.studentId===stu.id && r.term===t && String(r.year)===y);
       if (exists) return;
+
+      // Get the right structure for this student (stream-aware)
+      const struct = getFeeStructureForStudent(stu, t, y);
+      if (!struct) return;
 
       if (filterStatus && filterStatus !== 'unpaid') return;
       if (search && !stu.name.toLowerCase().includes(search) && !stu.adm.toLowerCase().includes(search)) return;
 
       const cls = classes.find(c => c.id === clsId);
-      rows.push({ rec: { id: null, studentId: stu.id, classId: clsId, term: struct.term, year: struct.year, totalFee: struct.totalFee, payments: [] }, stu, cls, paid: 0, bal: struct.totalFee, pct: 0, statusKey: 'unpaid' });
+      const noPrevBal = getPreviousBalance(stu.id, t, y);
+      const noCumBal = noPrevBal + struct.totalFee;
+      if (filterMinBal > 0 && noCumBal < filterMinBal) return;
+      rows.push({ rec: { id: null, studentId: stu.id, classId: clsId, term: t, year: y, totalFee: struct.totalFee, payments: [] }, stu, cls, paid: 0, bal: struct.totalFee, cumBal: noCumBal, pct: 0, statusKey: 'unpaid' });
     });
   });
 
@@ -10995,14 +12843,17 @@ function renderStudentBalances() {
         <td>${r.rec.term} ${r.rec.year}</td>
         <td>KES ${parseFloat(r.rec.totalFee||0).toLocaleString()}</td>
         <td style="color:var(--success)">KES ${r.paid.toLocaleString()}</td>
-        <td style="color:${r.bal>0?'var(--danger)':'var(--success)'}"><strong>KES ${r.bal.toLocaleString()}</strong></td>
+        <td style="color:${r.bal>0?'var(--danger)':'var(--success)'}">KES ${r.bal.toLocaleString()}</td>
+        <td style="color:${r.cumBal>0?'var(--danger)':'var(--success)'}" ><strong>KES ${r.cumBal.toLocaleString()}</strong></td>
         <td>${statusBadge}</td>
         <td>
           <button class="btn btn-sm btn-outline" onclick="viewStudentPaymentHistory('${r.stu.id}','${r.rec.term}','${r.rec.year}')"><i class="fa-solid fa-clipboard-list"></i> History</button>
           <button class="btn btn-sm btn-outline" onclick="quickPayStudent('${r.stu.id}','${r.rec.classId}','${r.rec.term}','${r.rec.year}')"><i class="fa-solid fa-credit-card"></i> Pay</button>
+          ${isFullFeesRole && r.rec.id ? `<button class="btn btn-sm btn-outline" style="color:var(--warning,#d97706);border-color:var(--warning,#d97706)" onclick="editFeeRecord('${r.rec.id}')"><i class="fa-solid fa-pen"></i> Edit</button>` : ''}
+          ${isFullFeesRole && r.rec.id ? `<button class="btn btn-sm btn-danger-sm" onclick="deleteFeeRecord('${r.rec.id}')"><i class="fa-solid fa-trash"></i></button>` : ''}
         </td>
       </tr>`;
-  }).join('') : '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:2rem">No fee records found.</td></tr>';
+  }).join('') : '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:2rem">No fee records found.</td></tr>';
 }
 
 function viewStudentPaymentHistory(stuId, term, year) {
@@ -11013,7 +12864,8 @@ function viewStudentPaymentHistory(stuId, term, year) {
 
   const payments = rec ? rec.payments : [];
   const paid = rec ? getRecordTotalPaid(rec) : 0;
-  const bal  = rec ? getRecordBalance(rec) : 0;
+  const prevBal = rec ? getPreviousBalance(stuId, term, year) : 0;
+  const bal  = rec ? prevBal + getRecordBalance(rec) : 0;
 
   showModal(`<i class="fa-solid fa-credit-card"></i> ${stu.name} — Payment History (${term} ${year})`, `
     <div style="margin-bottom:1rem">
@@ -11033,7 +12885,11 @@ function viewStudentPaymentHistory(stuId, term, year) {
             <td style="padding:.35rem;color:var(--success);font-weight:700">KES ${parseFloat(p.amount).toLocaleString()}</td>
             <td style="padding:.35rem">${p.mode}</td>
             <td style="padding:.35rem;color:${p.balanceAfter>0?'var(--danger)':'var(--success)'}">KES ${parseFloat(p.balanceAfter||0).toLocaleString()}</td>
-            <td style="padding:.35rem"><button class="btn btn-sm btn-outline" onclick="reprintReceipt('${stuId}','${term}','${year}','${p.id}')"><i class="fa-solid fa-print"></i></button></td>
+            <td style="padding:.35rem;display:flex;gap:.3rem;flex-wrap:wrap">
+              <button class="btn btn-sm btn-outline" onclick="reprintReceipt('${stuId}','${term}','${year}','${p.id}')" title="Reprint"><i class="fa-solid fa-print"></i></button>
+              <button class="btn btn-sm btn-outline" style="color:var(--warning,#d97706);border-color:var(--warning,#d97706)" onclick="closeModal();editPayment('${stuId}','${term}','${year}','${p.id}')" title="Edit"><i class="fa-solid fa-pen"></i></button>
+              <button class="btn btn-sm btn-danger-sm" onclick="closeModal();deletePayment('${stuId}','${term}','${year}','${p.id}')" title="Delete"><i class="fa-solid fa-trash"></i></button>
+            </td>
           </tr>`).join('')}
         </tbody>
       </table>` : '<p style="color:var(--muted);text-align:center;padding:1rem">No payments recorded yet.</p>'}
@@ -11065,8 +12921,179 @@ function reprintReceipt(stuId, term, year, payId) {
   if (!payment) return;
   const stu = students.find(s => s.id === stuId);
   const cls = classes.find(c => c.id === rec.classId);
-  lastReceiptHtml = buildReceiptHTML({ stu, cls, term, year, totalFee: rec.totalFee, payment, balBefore: payment.balanceBefore, balAfter: payment.balanceAfter, receiptNo: payment.receiptNo, date: payment.date, mode: payment.mode, notes: payment.notes, amount: payment.amount, schoolName: settings.schoolName || 'School' });
+  const prevBal = payment.prevBal !== undefined ? payment.prevBal : getPreviousBalance(stuId, term, year);
+  lastReceiptHtml = buildReceiptHTML({ stu, cls, term, year, totalFee: rec.totalFee, payment, prevBal, balBefore: payment.balanceBefore, balAfter: payment.balanceAfter, receiptNo: payment.receiptNo, date: payment.date, mode: payment.mode, notes: payment.notes, amount: payment.amount, schoolName: settings.schoolName || 'School' });
   printLastReceipt();
+}
+
+// ═══════════════════════════════════════════
+// FEE RECORD EDIT / DELETE
+// ═══════════════════════════════════════════
+
+function editFeeRecord(recId) {
+  const r = currentUser && currentUser.role;
+  if (!(r==='superadmin'||r==='admin'||r==='principal'||r==='bursar')) {
+    showToast('Only administrators and the bursar can edit fee records','error'); return;
+  }
+  loadFees();
+  const rec = feeRecords.find(f => f.id === recId);
+  if (!rec) { showToast('Fee record not found','error'); return; }
+  const stu = students.find(s => s.id === rec.studentId);
+  const cls = classes.find(c => c.id === rec.classId);
+
+  showModal(
+    `<i class="fa-solid fa-pen"></i> Edit Fee Record — ${stu?.name || 'Unknown'}`,
+    `<div style="display:flex;flex-direction:column;gap:1rem;padding:.5rem 0">
+      <div style="background:var(--surface,#f8fafc);border-radius:8px;padding:.75rem;font-size:.85rem;color:var(--muted)">
+        <strong>${stu?.name || '—'}</strong> &nbsp;|&nbsp; ${cls?.name || '—'} &nbsp;|&nbsp; ${rec.term} ${rec.year}
+      </div>
+      <div>
+        <label style="font-size:.82rem;font-weight:600;display:block;margin-bottom:.35rem">Total Fee (KES)</label>
+        <input id="editRecTotalFee" type="number" min="0" step="0.01" value="${parseFloat(rec.totalFee||0)}"
+          style="width:100%;padding:.5rem .75rem;border:1px solid var(--border);border-radius:6px;font-size:.95rem">
+      </div>
+    </div>`,
+    [
+      { label: '<i class="fa-solid fa-check"></i> Save Changes', cls: 'btn-primary', action: `_saveEditFeeRecord('${recId}')` },
+      { label: '<i class="fa-solid fa-xmark"></i> Cancel', cls: 'btn-outline', action: 'closeModal()' }
+    ]
+  );
+}
+
+function _saveEditFeeRecord(recId) {
+  loadFees();
+  const rec = feeRecords.find(f => f.id === recId);
+  if (!rec) { showToast('Fee record not found','error'); return; }
+  const newFee = parseFloat(document.getElementById('editRecTotalFee')?.value || 0);
+  if (isNaN(newFee) || newFee < 0) { showToast('Enter a valid fee amount','error'); return; }
+  rec.totalFee = newFee;
+  saveFees();
+  closeModal();
+  showToast('Fee record updated <i class="fa-solid fa-check"></i>', 'success');
+  renderStudentBalances && renderStudentBalances();
+}
+
+function deleteFeeRecord(recId) {
+  const r = currentUser && currentUser.role;
+  if (!(r==='superadmin'||r==='admin'||r==='principal'||r==='bursar')) {
+    showToast('Only administrators and the bursar can delete fee records','error'); return;
+  }
+  loadFees();
+  const rec = feeRecords.find(f => f.id === recId);
+  if (!rec) { showToast('Fee record not found','error'); return; }
+  const stu = students.find(s => s.id === rec.studentId);
+  const msg = `Delete all fee data for ${stu?.name || 'this student'} (${rec.term} ${rec.year})? This cannot be undone.`;
+  if (!confirm(msg)) return;
+  const idx = feeRecords.findIndex(f => f.id === recId);
+  if (idx > -1) feeRecords.splice(idx, 1);
+  saveFees();
+  showToast('Fee record deleted', 'info');
+  renderStudentBalances && renderStudentBalances();
+}
+
+function editPayment(stuId, term, year, payId) {
+  const r = currentUser && currentUser.role;
+  if (!(r==='superadmin'||r==='admin'||r==='principal'||r==='bursar')) {
+    showToast('Only administrators and the bursar can edit payments','error'); return;
+  }
+  loadFees();
+  const rec = feeRecords.find(f => f.studentId===stuId && f.term===term && String(f.year)===String(year));
+  const pay = rec && rec.payments.find(p => p.id === payId);
+  if (!pay) { showToast('Payment not found','error'); return; }
+  const stu = students.find(s => s.id === stuId);
+
+  showModal(
+    `<i class="fa-solid fa-pen"></i> Edit Payment — ${stu?.name || 'Unknown'}`,
+    `<div style="display:flex;flex-direction:column;gap:.9rem;padding:.5rem 0">
+      <div style="background:var(--surface,#f8fafc);border-radius:8px;padding:.75rem;font-size:.85rem;color:var(--muted)">
+        Receipt: <strong style="color:var(--primary)">${pay.receiptNo}</strong> &nbsp;|&nbsp; ${term} ${year}
+      </div>
+      <div>
+        <label style="font-size:.82rem;font-weight:600;display:block;margin-bottom:.35rem">Amount (KES)</label>
+        <input id="editPayAmount" type="number" min="0" step="0.01" value="${parseFloat(pay.amount||0)}"
+          style="width:100%;padding:.5rem .75rem;border:1px solid var(--border);border-radius:6px;font-size:.95rem">
+      </div>
+      <div>
+        <label style="font-size:.82rem;font-weight:600;display:block;margin-bottom:.35rem">Date</label>
+        <input id="editPayDate" type="date" value="${pay.date||''}"
+          style="width:100%;padding:.5rem .75rem;border:1px solid var(--border);border-radius:6px;font-size:.95rem">
+      </div>
+      <div>
+        <label style="font-size:.82rem;font-weight:600;display:block;margin-bottom:.35rem">Mode</label>
+        <select id="editPayMode" style="width:100%;padding:.5rem .75rem;border:1px solid var(--border);border-radius:6px;font-size:.95rem">
+          ${['Cash','M-Pesa','Bank Transfer','Cheque','Card','Other'].map(m => `<option value="${m}"${pay.mode===m?' selected':''}>${m}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label style="font-size:.82rem;font-weight:600;display:block;margin-bottom:.35rem">Reference / Notes</label>
+        <input id="editPayNotes" type="text" value="${pay.notes||''}" placeholder="Transaction ref, cheque no..."
+          style="width:100%;padding:.5rem .75rem;border:1px solid var(--border);border-radius:6px;font-size:.95rem">
+      </div>
+    </div>`,
+    [
+      { label: '<i class="fa-solid fa-check"></i> Save Changes', cls: 'btn-primary', action: `_saveEditPayment('${stuId}','${term}','${year}','${payId}')` },
+      { label: '<i class="fa-solid fa-xmark"></i> Cancel', cls: 'btn-outline', action: 'closeModal()' }
+    ]
+  );
+}
+
+function _saveEditPayment(stuId, term, year, payId) {
+  loadFees();
+  const rec = feeRecords.find(f => f.studentId===stuId && f.term===term && String(f.year)===String(year));
+  const pay = rec && rec.payments.find(p => p.id === payId);
+  if (!pay) { showToast('Payment not found','error'); return; }
+
+  const newAmount = parseFloat(document.getElementById('editPayAmount')?.value || 0);
+  if (isNaN(newAmount) || newAmount <= 0) { showToast('Enter a valid amount','error'); return; }
+
+  pay.amount = newAmount;
+  pay.date   = document.getElementById('editPayDate')?.value || pay.date;
+  pay.mode   = document.getElementById('editPayMode')?.value || pay.mode;
+  pay.notes  = document.getElementById('editPayNotes')?.value || '';
+
+  // Recalculate running balances across all payments for this record
+  const prevBal = getPreviousBalance(stuId, term, year);
+  let runBal = prevBal + parseFloat(rec.totalFee || 0);
+  rec.payments.forEach(p => {
+    p.balanceBefore = runBal;
+    p.balanceAfter  = runBal - parseFloat(p.amount || 0);
+    runBal = p.balanceAfter;
+  });
+
+  saveFees();
+  closeModal();
+  showToast('Payment updated <i class="fa-solid fa-check"></i>', 'success');
+  renderStudentBalances && renderStudentBalances();
+}
+
+function deletePayment(stuId, term, year, payId) {
+  const r = currentUser && currentUser.role;
+  if (!(r==='superadmin'||r==='admin'||r==='principal'||r==='bursar')) {
+    showToast('Only administrators and the bursar can delete payments','error'); return;
+  }
+  loadFees();
+  const rec = feeRecords.find(f => f.studentId===stuId && f.term===term && String(f.year)===String(year));
+  const pay = rec && rec.payments.find(p => p.id === payId);
+  if (!pay) { showToast('Payment not found','error'); return; }
+
+  if (!confirm(`Delete payment of KES ${parseFloat(pay.amount).toLocaleString()} (Receipt ${pay.receiptNo})? This cannot be undone.`)) return;
+
+  rec.payments = rec.payments.filter(p => p.id !== payId);
+
+  // Recalculate running balances
+  const prevBal = getPreviousBalance(stuId, term, year);
+  let runBal = prevBal + parseFloat(rec.totalFee || 0);
+  rec.payments.forEach(p => {
+    p.balanceBefore = runBal;
+    p.balanceAfter  = runBal - parseFloat(p.amount || 0);
+    runBal = p.balanceAfter;
+  });
+
+  saveFees();
+  showToast('Payment deleted', 'info');
+  renderStudentBalances && renderStudentBalances();
+  // Reopen the history modal to show updated list
+  viewStudentPaymentHistory(stuId, term, year);
 }
 
 // ═══════════════════════════════════════════
@@ -11091,7 +13118,8 @@ function renderFeeReminders() {
     if (filterTerm  && rec.term !== filterTerm)     return;
     if (filterYear  && String(rec.year) !== filterYear) return;
     if (teacherClassIds && !teacherClassIds.includes(rec.classId)) return;
-    const bal = getRecordBalance(rec);
+    const prevBal = getPreviousBalance(rec.studentId, rec.term, rec.year);
+    const bal = prevBal + getRecordBalance(rec);
     if (bal <= 0) return;
     const stu = students.find(s => s.id === rec.studentId); if (!stu) return;
     const cls = classes.find(c => c.id === rec.classId);
@@ -11224,7 +13252,8 @@ function printAllReminders() {
     if (filterTerm  && rec.term !== filterTerm)     return;
     if (filterYear  && String(rec.year) !== filterYear) return;
     if (teacherClassIds && !teacherClassIds.includes(rec.classId)) return;
-    const bal = getRecordBalance(rec);
+    const prevBal = getPreviousBalance(rec.studentId, rec.term, rec.year);
+    const bal = prevBal + getRecordBalance(rec);
     if (bal <= 0) return;
     const stu = students.find(s => s.id === rec.studentId); if (!stu) return;
     const cls = classes.find(c => c.id === rec.classId);
@@ -11325,7 +13354,8 @@ function exportFeesSummary() {
     const stu = students.find(s => s.id === rec.studentId); if (!stu) return;
     const cls = classes.find(c => c.id === rec.classId);
     const paid = getRecordTotalPaid(rec);
-    const bal  = getRecordBalance(rec);
+    const prevBal = getPreviousBalance(rec.studentId, rec.term, rec.year);
+    const bal  = prevBal + getRecordBalance(rec);
     const status = bal <= 0 ? 'Cleared' : paid > 0 ? 'Partial' : 'Unpaid';
     rows.push([stu.name, stu.adm, cls?.name||'', rec.term, rec.year, rec.totalFee, paid, bal, status]);
   });
@@ -11340,7 +13370,72 @@ function exportFeesSummary() {
 }
 
 function exportStudentBalances() {
-  exportFeesSummary();
+  loadFees();
+  const filterClass  = document.getElementById('fsbClass')?.value  || '';
+  const filterTerm   = document.getElementById('fsbTerm')?.value   || '';
+  const filterYear   = document.getElementById('fsbYear')?.value   || '';
+  const filterStatus = document.getElementById('fsbStatus')?.value || '';
+  const filterMinBal = parseFloat(document.getElementById('fsbMinBalance')?.value || '0') || 0;
+  const search       = (document.getElementById('fsbSearch')?.value || '').toLowerCase();
+
+  const isTeacher = currentUser && currentUser.role === 'teacher';
+  const isFullFeesRole = currentUser && (currentUser.role==='superadmin'||currentUser.role==='admin'||currentUser.role==='principal'||currentUser.role==='bursar');
+  const teacherClassIds = (isTeacher && !isFullFeesRole)
+    ? [...new Set(getClassTeacherStreamIds(currentUser.teacherId).map(sid => { const s=streams.find(x=>x.id===sid); return s?s.classId:null; }).filter(Boolean))]
+    : null;
+
+  const csvSyncCls = getFeeSyncedClassIds();
+  const csvSyncStr = getFeeSyncedStreamIds();
+
+  let rows = [['Student Name','Adm No','Class','Term','Year','Total Fee','Amount Paid','Term Balance','Cumulative Balance','Status']];
+
+  feeRecords.forEach(rec => {
+    if (filterTerm   && rec.term !== filterTerm)              return;
+    if (filterYear   && String(rec.year) !== filterYear)      return;
+    if (filterClass  && rec.classId !== filterClass)          return;
+    if (teacherClassIds && !teacherClassIds.includes(rec.classId)) return;
+    if (csvSyncCls && !csvSyncCls.includes(rec.classId)) return;
+    const stu = students.find(s => s.id === rec.studentId); if (!stu) return;
+    if (csvSyncStr && stu.streamId && !csvSyncStr.includes(stu.streamId)) return;
+    if (search && !stu.name.toLowerCase().includes(search) && !stu.adm.toLowerCase().includes(search)) return;
+    const cls = classes.find(c => c.id === rec.classId);
+    const paid = getRecordTotalPaid(rec);
+    const prevBal = getPreviousBalance(rec.studentId, rec.term, rec.year);
+    const termBal = getRecordBalance(rec);
+    const cumBal  = prevBal + termBal;
+    const status = Math.round(cumBal * 100) / 100 <= 0 ? 'Cleared' : paid > 0 ? 'Partial' : 'Unpaid';
+    if (filterStatus && status.toLowerCase() !== filterStatus) return;
+    if (filterMinBal > 0 && cumBal < filterMinBal) return;
+    rows.push([stu.name, stu.adm, cls?.name||'', rec.term, rec.year, rec.totalFee, paid, termBal, cumBal, status]);
+  });
+
+  // Also no-record unpaid students
+  students.forEach(stu => {
+    const clsId = stu.classId;
+    if (teacherClassIds && !teacherClassIds.includes(clsId)) return;
+    if (filterClass && clsId !== filterClass) return;
+    if (csvSyncCls && !csvSyncCls.includes(clsId)) return;
+    if (csvSyncStr && stu.streamId && !csvSyncStr.includes(stu.streamId)) return;
+    if (search && !stu.name.toLowerCase().includes(search) && !stu.adm.toLowerCase().includes(search)) return;
+    const structs = feeStructures.filter(f => f.classId===clsId && (!filterTerm||f.term===filterTerm) && (!filterYear||String(f.year)===filterYear));
+    structs.forEach(struct => {
+      if (feeRecords.some(r => r.studentId===stu.id && r.term===struct.term && String(r.year)===struct.year)) return;
+      if (filterStatus && filterStatus !== 'unpaid') return;
+      const cls = classes.find(c=>c.id===clsId);
+      const noPrevBal = getPreviousBalance(stu.id, struct.term, struct.year);
+      const noCumBal  = noPrevBal + parseFloat(struct.totalFee||0);
+      if (filterMinBal > 0 && noCumBal < filterMinBal) return;
+      rows.push([stu.name, stu.adm, cls?.name||'', struct.term, struct.year, struct.totalFee, 0, struct.totalFee, noCumBal, 'Unpaid']);
+    });
+  });
+
+  const csv = rows.map(r => r.map(v => `"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type:'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `fee_balances_${filterTerm||'all'}_${filterYear||'all'}${filterMinBal>0?'_min'+filterMinBal:''}.csv`;
+  a.click(); URL.revokeObjectURL(url);
+  showToast('Fee balances exported <i class="fa-solid fa-check"></i>', 'success');
 }
 
 // ── Fee PDF Statement ──
@@ -11350,15 +13445,16 @@ function downloadFeeStatementPDF() {
   const filterTerm   = document.getElementById('fsbTerm')?.value   || '';
   const filterYear   = document.getElementById('fsbYear')?.value   || '';
   const filterStatus = document.getElementById('fsbStatus')?.value || '';
+  const filterMinBal = parseFloat(document.getElementById('fsbMinBalance')?.value || '0') || 0;
   const search       = (document.getElementById('fsbSearch')?.value || '').toLowerCase();
   const schoolName   = (settings && settings.schoolName) ? settings.schoolName : 'School';
 
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
   // Header
   doc.setFillColor(37, 99, 235);
-  doc.rect(0, 0, 210, 28, 'F');
+  doc.rect(0, 0, 297, 28, 'F');
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(16);
   doc.setFont(undefined, 'bold');
@@ -11377,6 +13473,7 @@ function downloadFeeStatementPDF() {
   if (filterTerm)  filterText.push(`Term: ${filterTerm}`);
   if (filterYear)  filterText.push(`Year: ${filterYear}`);
   if (filterStatus) filterText.push(`Status: ${filterStatus.charAt(0).toUpperCase()+filterStatus.slice(1)}`);
+  if (filterMinBal > 0) filterText.push(`Min Balance: KES ${filterMinBal.toLocaleString()}+`);
   if (filterText.length) doc.text('Filters: ' + filterText.join('  |  '), 14, 34);
 
   // Build rows
@@ -11395,32 +13492,48 @@ function downloadFeeStatementPDF() {
     if (filterClass  && rec.classId !== filterClass)          return;
     if (teacherClassIds && !teacherClassIds.includes(rec.classId)) return;
     const stu = students.find(s => s.id === rec.studentId); if (!stu) return;
+    // Respect fee sync settings (mirrors renderStudentBalances)
+    const pdfFeeSyncCls = getFeeSyncedClassIds();
+    if (pdfFeeSyncCls && !pdfFeeSyncCls.includes(rec.classId)) return;
+    const pdfFeeSyncStr = getFeeSyncedStreamIds();
+    if (pdfFeeSyncStr && stu.streamId && !pdfFeeSyncStr.includes(stu.streamId)) return;
     if (search && !stu.name.toLowerCase().includes(search) && !stu.adm.toLowerCase().includes(search)) return;
     const cls   = classes.find(c => c.id === rec.classId);
     const paid  = getRecordTotalPaid(rec);
-    const bal   = getRecordBalance(rec);
-    const status = bal <= 0 ? 'Cleared' : paid > 0 ? 'Partial' : 'Unpaid';
+    const prevBal = getPreviousBalance(rec.studentId, rec.term, rec.year);
+    const termBal = getRecordBalance(rec);
+    const cumBal  = prevBal + termBal;
+    const status = Math.round(cumBal * 100) / 100 <= 0 ? 'Cleared' : paid > 0 ? 'Partial' : 'Unpaid';
     if (filterStatus && status.toLowerCase() !== filterStatus) return;
+    if (filterMinBal > 0 && cumBal < filterMinBal) return;
     totalExpected += parseFloat(rec.totalFee||0);
     totalPaid     += paid;
-    totalBal      += bal;
-    rows.push([stu.adm, stu.name, cls?.name||'—', `${rec.term} ${rec.year}`, `KES ${parseFloat(rec.totalFee||0).toLocaleString()}`, `KES ${paid.toLocaleString()}`, `KES ${bal.toLocaleString()}`, status]);
+    totalBal      += cumBal;
+    rows.push([stu.adm, stu.name, cls?.name||'—', `${rec.term} ${rec.year}`, `KES ${parseFloat(rec.totalFee||0).toLocaleString()}`, `KES ${paid.toLocaleString()}`, `KES ${termBal.toLocaleString()}`, `KES ${cumBal.toLocaleString()}`, status]);
   });
 
-  // Also unpaid rows
+  // Also unpaid rows — with sync + min-balance checks
+  const pdfSyncCls2 = getFeeSyncedClassIds();
+  const pdfSyncStr2 = getFeeSyncedStreamIds();
   students.forEach(stu => {
     const clsId = stu.classId;
     if (teacherClassIds && !teacherClassIds.includes(clsId)) return;
     if (filterClass && clsId !== filterClass) return;
+    // Respect fee sync
+    if (pdfSyncCls2 && !pdfSyncCls2.includes(clsId)) return;
+    if (pdfSyncStr2 && stu.streamId && !pdfSyncStr2.includes(stu.streamId)) return;
     if (search && !stu.name.toLowerCase().includes(search) && !stu.adm.toLowerCase().includes(search)) return;
     const structs = feeStructures.filter(f => f.classId===clsId && (!filterTerm||f.term===filterTerm) && (!filterYear||String(f.year)===filterYear));
     structs.forEach(struct => {
       if (feeRecords.some(r => r.studentId===stu.id && r.term===struct.term && String(r.year)===struct.year)) return;
       if (filterStatus && filterStatus !== 'unpaid') return;
       const cls = classes.find(c=>c.id===clsId);
+      const noPrevBal2 = getPreviousBalance(stu.id, struct.term, struct.year);
+      const noCumBal2  = noPrevBal2 + parseFloat(struct.totalFee||0);
+      if (filterMinBal > 0 && noCumBal2 < filterMinBal) return;
       totalExpected += parseFloat(struct.totalFee||0);
       totalBal      += parseFloat(struct.totalFee||0);
-      rows.push([stu.adm, stu.name, cls?.name||'—', `${struct.term} ${struct.year}`, `KES ${parseFloat(struct.totalFee||0).toLocaleString()}`, 'KES 0', `KES ${parseFloat(struct.totalFee||0).toLocaleString()}`, 'Unpaid']);
+      rows.push([stu.adm, stu.name, cls?.name||'—', `${struct.term} ${struct.year}`, `KES ${parseFloat(struct.totalFee||0).toLocaleString()}`, 'KES 0', `KES ${parseFloat(struct.totalFee||0).toLocaleString()}`, `KES ${noCumBal2.toLocaleString()}`, 'Unpaid']);
     });
   });
 
@@ -11430,14 +13543,14 @@ function downloadFeeStatementPDF() {
 
   doc.autoTable({
     startY,
-    head: [['Adm No', 'Student Name', 'Class', 'Term/Year', 'Total Fee', 'Paid', 'Balance', 'Status']],
+    head: [['Adm No', 'Student Name', 'Class', 'Term/Year', 'Total Fee', 'Paid', 'Balance', 'Cumulative', 'Status']],
     body: rows,
     theme: 'grid',
     headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold', fontSize: 8 },
     bodyStyles: { fontSize: 7.5, cellPadding: 1.5 },
-    columnStyles: { 1: { cellWidth: 38 }, 7: { fontStyle: 'bold' } },
+    columnStyles: { 1: { cellWidth: 32 }, 6: { halign: 'right' }, 7: { halign: 'right', fontStyle: 'bold' }, 8: { fontStyle: 'bold' } },
     didParseCell: (data) => {
-      if (data.section === 'body' && data.column.index === 7) {
+      if (data.section === 'body' && data.column.index === 8) {
         const val = data.cell.raw;
         if (val === 'Cleared') data.cell.styles.textColor = [22, 163, 74];
         else if (val === 'Partial') data.cell.styles.textColor = [202, 138, 4];
@@ -11450,7 +13563,7 @@ function downloadFeeStatementPDF() {
   // Summary footer
   const finalY = doc.lastAutoTable.finalY + 6;
   doc.setFillColor(245, 247, 250);
-  doc.rect(14, finalY, 182, 18, 'F');
+  doc.rect(14, finalY, 269, 18, 'F');
   doc.setFontSize(8.5);
   doc.setFont(undefined, 'bold');
   doc.setTextColor(30, 30, 30);
@@ -11460,7 +13573,7 @@ function downloadFeeStatementPDF() {
   doc.setTextColor(22, 163, 74);
   doc.text(`Collected: KES ${totalPaid.toLocaleString()}`, 75, finalY + 12);
   doc.setTextColor(220, 38, 38);
-  doc.text(`Outstanding: KES ${totalBal.toLocaleString()}`, 135, finalY + 12);
+  doc.text(`Cumulative: KES ${totalBal.toLocaleString()}`, 135, finalY + 12);
 
   const label = [filterClass&&classes.find(c=>c.id===filterClass)?.name, filterTerm, filterYear].filter(Boolean).join('_') || 'all';
   doc.save(`fee_statement_${label}.pdf`);
@@ -11505,7 +13618,8 @@ function handleFeeImport(input) {
         }
 
         if (amount > 0) {
-          const balBefore = getRecordBalance(rec);
+          const prevBal = getPreviousBalance(rec.studentId, rec.term, rec.year);
+          const balBefore = prevBal + getRecordBalance(rec);
           const balAfter  = Math.max(0, balBefore - amount);
           rec.payments.push({ id: uid(), receiptNo: rno, date: pdate, amount, mode, notes, balanceBefore: balBefore, balanceAfter: balAfter });
         }
@@ -11586,7 +13700,8 @@ function autoPopulateReportFees(stuId, term, year) {
   loadFees();
   const rec = feeRecords.find(r => r.studentId===stuId && r.term===term && String(r.year)===String(year));
   if (!rec) return;
-  const bal  = getRecordBalance(rec);
+  const prevBal = getPreviousBalance(stuId, term, year);
+  const bal  = prevBal + getRecordBalance(rec);
   const balEl = document.getElementById('rpFeeBalance');
   if (balEl && !balEl.value) balEl.value = bal;
 }
@@ -11611,7 +13726,8 @@ function getStudentFeeStatus(stuId, term, year) {
   loadFees();
   const rec = feeRecords.find(r => r.studentId===stuId && r.term===term && String(r.year)===String(year));
   if (!rec) return { status: 'No Record', cleared: false, balance: null };
-  const bal = getRecordBalance(rec);
+  const prevBal = getPreviousBalance(stuId, term, year);
+  const bal = prevBal + getRecordBalance(rec);
   return { status: bal <= 0 ? 'FEES CLEARED <i class="fa-solid fa-circle-check"></i>' : `BALANCE: KES ${bal.toLocaleString()}`, cleared: bal <= 0, balance: bal };
 }
 
@@ -13187,6 +15303,35 @@ function confirmPaperDownload(paperId) {
   if (idx === -1) { showToast('Paper not found', 'error'); return; }
   const paper = termlyPapers[idx];
 
+  // ── PAYWALL: block non-admins from downloading paid papers ──
+  const _role = currentUser && currentUser.role;
+  const _isAdmin = _role === 'admin' || _role === 'superadmin' || _role === 'platform_admin';
+  if (!_isAdmin && paper.price > 0) {
+    const _subj = (typeof subjects !== 'undefined') ? subjects.find(s => s.id === paper.subjectId) : null;
+    showModal(
+      '<i class="fa-solid fa-credit-card"></i> Payment Required',
+      `<div style="text-align:center;padding:1rem 0">
+        <div style="font-size:2.5rem;margin-bottom:.75rem"><i class="fa-solid fa-lock"></i></div>
+        <div style="font-weight:700;font-size:1.05rem;margin-bottom:.25rem">${paper.title}</div>
+        <div style="color:var(--muted);font-size:.85rem;margin-bottom:1.25rem">${_subj ? _subj.name : ''} ${paper.term ? '· ' + paper.term : ''} ${paper.year || ''}</div>
+        <div style="background:var(--primary-lt,#ede9fe);border-radius:12px;padding:1rem;margin-bottom:1.25rem">
+          <div style="font-size:.8rem;color:var(--muted);margin-bottom:.2rem">Amount to Pay</div>
+          <div style="font-size:2rem;font-weight:800;color:var(--primary,#4f7cff)">KES ${paper.price.toLocaleString()}</div>
+        </div>
+        <p style="font-size:.82rem;color:var(--muted);line-height:1.6">
+          This paper requires payment before downloading.<br>
+          Please pay via <strong>M-Pesa or school cashier</strong>, then ask<br>
+          your administrator to confirm and provide access.
+        </p>
+        <div style="background:rgba(124,58,237,.07);border-radius:9px;padding:.75rem 1rem;font-size:.8rem;color:#475569;margin-top:.75rem">
+          <i class="fa-solid fa-circle-info"></i> Contact your school administrator after payment to get access to this paper.
+        </div>
+      </div>`,
+      []
+    );
+    return;
+  }
+
   // Increment download count
   termlyPapers[idx].downloads = (paper.downloads || 0) + 1;
   saveTermlyPapers();
@@ -13365,7 +15510,7 @@ function renderPlatformPapers() {
             ${p.desc ? `<div style="font-size:.76rem;color:var(--muted);margin-top:.3rem;line-height:1.5">${p.desc}</div>` : ''}
           </div>
           <div style="display:flex;flex-direction:column;gap:.4rem;align-items:flex-end;flex-shrink:0">
-            ${isFree && p.fileData ? `<button class="btn btn-primary btn-sm" onclick="downloadPlatformPaper('${p.id}')">⬇ Download</button>` : (!isFree ? `<button class="btn btn-outline btn-sm" style="opacity:.6;cursor:not-allowed" disabled><i class="fa-solid fa-lock"></i> Paid</button>` : '')}
+            ${isFree && p.fileData ? `<button class="btn btn-primary btn-sm" onclick="downloadPlatformPaper('${p.id}')">⬇ Download</button>` : (!isFree ? `<button class="btn btn-primary btn-sm" onclick="downloadPlatformPaper('${p.id}')"><i class="fa-solid fa-credit-card"></i> Buy &amp; Download</button>` : '')}
             ${isPlatformAdmin ? `<button class="btn btn-outline btn-sm" style="color:#ef4444;border-color:#ef4444" onclick="deletePlatformPaper('${p.id}')"><i class="fa-solid fa-trash"></i> Delete</button>` : ''}
           </div>
         </div>`;
@@ -13436,6 +15581,35 @@ function downloadPlatformPaper(paperId) {
   const papers = loadPlatformPapers();
   const paper = papers.find(p => p.id === paperId);
   if (!paper || !paper.fileData) { showToast('File not available for download.', 'error'); return; }
+
+  // ── PAYWALL: block non-admins from downloading paid platform papers ──
+  const _role = currentUser && currentUser.role;
+  const _isAdmin = _role === 'admin' || _role === 'superadmin' || _role === 'platform_admin';
+  if (!_isAdmin && paper.price > 0) {
+    showModal(
+      '<i class="fa-solid fa-credit-card"></i> Payment Required',
+      `<div style="text-align:center;padding:1rem 0">
+        <div style="font-size:2.5rem;margin-bottom:.75rem"><i class="fa-solid fa-lock"></i></div>
+        <div style="font-weight:700;font-size:1.05rem;margin-bottom:.25rem">${paper.title}</div>
+        <div style="color:var(--muted);font-size:.85rem;margin-bottom:1.25rem">${paper.subject || ''} ${paper.classLevel ? '· ' + paper.classLevel : ''} ${paper.term ? '· ' + paper.term : ''} ${paper.year || ''}</div>
+        <div style="background:var(--primary-lt,#ede9fe);border-radius:12px;padding:1rem;margin-bottom:1.25rem">
+          <div style="font-size:.8rem;color:var(--muted);margin-bottom:.2rem">Amount to Pay</div>
+          <div style="font-size:2rem;font-weight:800;color:var(--primary,#4f7cff)">KES ${parseFloat(paper.price).toLocaleString()}</div>
+        </div>
+        <p style="font-size:.82rem;color:var(--muted);line-height:1.6">
+          This revision paper requires payment before downloading.<br>
+          Please pay via <strong>M-Pesa or school cashier</strong>, then ask<br>
+          your administrator to confirm and provide access.
+        </p>
+        <div style="background:rgba(124,58,237,.07);border-radius:9px;padding:.75rem 1rem;font-size:.8rem;color:#475569;margin-top:.75rem">
+          <i class="fa-solid fa-circle-info"></i> Contact your Platform Administrator after payment to unlock this paper.
+        </div>
+      </div>`,
+      []
+    );
+    return;
+  }
+
   try {
     const a = document.createElement('a');
     a.href = paper.fileData;
@@ -13701,6 +15875,7 @@ function ebAutoInstructions() {
   if (EB.sections.some(s => s.type === 'mcq')) insts.splice(1,0,'For multiple choice, shade or circle the correct answer.');
   if (EB.sections.some(s => s.type === 'structured')) insts.splice(2,0,'Answer all structured questions in the spaces provided.');
   if (EB.sections.some(s => s.type === 'essay')) insts.splice(3,0,'For essay questions, write in complete sentences and paragraphs.');
+  if (EB.sections.some(s => s.type === 'comprehension')) insts.splice(2,0,'Read the passage(s) carefully before answering the questions that follow.');
   insts.forEach(t => ebAddInstruction(t));
 }
 function ebGetInstructions() {
@@ -13755,8 +15930,17 @@ function ebRenderSections() {
             <option value="mcq" ${sec.type==='mcq'?'selected':''}>Multiple Choice</option>
             <option value="structured" ${sec.type==='structured'?'selected':''}>Structured</option>
             <option value="essay" ${sec.type==='essay'?'selected':''}>Essay</option>
+            <option value="comprehension" ${sec.type==='comprehension'?'selected':''}>Comprehension</option>
           </select>
         </div>
+        ${sec.type==='comprehension'?`
+        <div class="eb-section-field" style="flex-basis:100%"><label>Sub-type</label>
+          <select onchange="ebUpdateSection(${idx},'comprehensionSubtype',this.value)">
+            <option value="comprehension" ${(sec.comprehensionSubtype||'comprehension')==='comprehension'?'selected':''}>General Comprehension</option>
+            <option value="literary" ${sec.comprehensionSubtype==='literary'?'selected':''}>Literary Comprehension</option>
+            <option value="poetry" ${sec.comprehensionSubtype==='poetry'?'selected':''}>Poetry</option>
+          </select>
+        </div>`:''} 
         <div class="eb-section-field"><label>Questions</label><input type="number" value="${sec.questionCount}" min="1" max="50" onchange="ebUpdateSection(${idx},'questionCount',parseInt(this.value))"/></div>
         <div class="eb-section-field"><label>Marks Each</label><input type="number" value="${sec.marksPerQuestion}" min="1" max="100" onchange="ebUpdateSection(${idx},'marksPerQuestion',parseInt(this.value))"/></div>
         <div class="eb-section-field"><label>Section Total</label><input type="number" value="${sec.totalMarks}" min="1" max="200" style="background:var(--primary-lt);font-weight:700" onchange="ebUpdateSection(${idx},'totalMarks',parseInt(this.value))"/></div>
@@ -13788,12 +15972,23 @@ function ebRenderQuestionBuilder() {
   area.innerHTML = EB.sections.map((sec, sIdx) => `
     <div class="card" style="margin-bottom:1.25rem">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:.75rem 1.25rem;border-bottom:1px solid var(--border-lt);background:${EB.spColors[sIdx%EB.spColors.length]}12;border-left:4px solid ${EB.spColors[sIdx%EB.spColors.length]}">
-        <h3 style="font-size:.95rem;color:${EB.spColors[sIdx%EB.spColors.length]}">Section ${ebEscape(sec.name)}: ${ebTypeLabel(sec.type)} <span style="font-size:.76rem;background:${EB.spColors[sIdx%EB.spColors.length]}22;padding:1px 8px;border-radius:20px;margin-left:.35rem">${sec.questions.length}/${sec.questionCount}</span></h3>
+        <h3 style="font-size:.95rem;color:${EB.spColors[sIdx%EB.spColors.length]}">Section ${ebEscape(sec.name)}: ${sec.type==='comprehension'?({'comprehension':'Comprehension','literary':'Literary Comprehension','poetry':'Poetry'}[sec.comprehensionSubtype||'comprehension']||'Comprehension'):ebTypeLabel(sec.type)} <span style="font-size:.76rem;background:${EB.spColors[sIdx%EB.spColors.length]}22;padding:1px 8px;border-radius:20px;margin-left:.35rem">${sec.questions.length}/${sec.questionCount}</span></h3>
         <div style="display:flex;gap:.4rem">
-          <button class="btn btn-outline btn-sm" onclick="ebOpenAIModal(${sIdx})"><i class="fa-solid fa-robot"></i> AI</button>
+          ${sec.type==='comprehension'?`<button class="btn btn-outline btn-sm" onclick="ebOpenComprehensionAI(${sIdx})"><i class="fa-solid fa-robot"></i> AI from Passage</button>`:`<button class="btn btn-outline btn-sm" onclick="ebOpenAIModal(${sIdx})"><i class="fa-solid fa-robot"></i> AI</button>`}
           <button class="btn btn-outline btn-sm" onclick="ebAddQuestion(${sIdx})"><i class="fa-solid fa-plus"></i> Manual</button>
         </div>
       </div>
+      ${sec.type==='comprehension'?`
+      <div style="padding:.75rem 1rem 0;border-bottom:1px dashed var(--border-lt)">
+        <div style="font-size:.8rem;font-weight:700;color:var(--primary);margin-bottom:.4rem"><i class="fa-solid fa-file-lines"></i> ${{'comprehension':'Comprehension Passage','literary':'Literary Extract','poetry':'Poem/Verse'}[sec.comprehensionSubtype||'comprehension']}</div>
+        <div style="display:flex;gap:.5rem;margin-bottom:.4rem">
+          <button class="btn btn-outline btn-sm" onclick="ebPassageImageUpload(${sIdx})" style="font-size:.75rem"><i class="fa-regular fa-image"></i> ${sec.passageImage?'Change':'Add'} Image</button>
+          ${sec.passageImage?`<button class="btn btn-sm" onclick="ebRemovePassageImage(${sIdx})" style="color:var(--danger);font-size:.75rem;background:none;border:1px solid var(--danger)"><i class="fa-solid fa-xmark"></i> Remove Image</button>`:''}
+          <span style="font-size:.73rem;color:var(--muted);align-self:center">Or type the passage below</span>
+        </div>
+        ${sec.passageImage?`<img src="${sec.passageImage}" style="max-width:100%;max-height:250px;border:1.5px solid var(--border-lt);border-radius:6px;margin-bottom:.5rem;display:block"/>`:''}
+        <textarea placeholder="Type comprehension passage, poem, or extract here..." style="width:100%;min-height:120px;padding:8px 10px;border:1.5px solid var(--border-lt);border-radius:6px;font-size:.83rem;resize:vertical;outline:none;font-family:Georgia,serif;line-height:1.7" onchange="ebUpdateSection(${sIdx},'passageText',this.value)">${ebEscape(sec.passageText||'')}</textarea>
+      </div>`:''}
       <div style="padding:.75rem 1rem" id="ebqs-${sIdx}">
         ${!sec.questions.length ? `<p style="color:var(--muted);font-size:.82rem;text-align:center;padding:1rem">No questions yet — click AI or Manual to add</p>` :
           sec.type === 'mcq'
@@ -13802,19 +15997,29 @@ function ebRenderQuestionBuilder() {
         }
       </div>
     </div>`).join('');
+  // Fix textarea values: innerHTML with ebEscape() shows &amp; etc as literals in textarea
+  // We must set .value directly from EB data after rendering
+  EB.sections.forEach((sec, sIdx) => {
+    sec.questions.forEach((q, qIdx) => {
+      const ta = document.getElementById('ebqt-' + sIdx + '-' + qIdx);
+      if (ta && q.question) ta.value = q.question;
+    });
+  });
+  setTimeout(() => { if (window.MathJax) MathJax.typesetPromise([area]).catch(()=>{}); }, 100);
 }
 
-function ebTypeLabel(t) { return {mcq:'Multiple Choice',structured:'Structured',essay:'Essay'}[t] || t; }
+function ebTypeLabel(t) { return {mcq:'Multiple Choice',structured:'Structured',essay:'Essay',comprehension:'Comprehension'}[t] || t; }
 
 function ebRenderQCard(sIdx, qIdx, q, sec) {
   const letters = ['A','B','C','D'];
   const badge = q.aiGenerated ? '<span style="font-size:.68rem;background:#d1fae5;color:#065f46;padding:1px 6px;border-radius:12px;font-weight:700">AI</span>' : '';
-  const typeLabel = {mcq:'MCQ',structured:'STR',essay:'ESS'}[sec.type] || sec.type;
+  const typeLabel = {mcq:'MCQ',structured:'STR',essay:'ESS',comprehension:'COMP'}[sec.type] || sec.type;
 
   // Image preview for this question
   const imgSection = `
     <div style="margin-top:.5rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
-      <button type="button" onclick="ebOpenImgUpload(${sIdx},${qIdx})" class="btn btn-outline btn-sm" style="font-size:.75rem"><i class="fa-regular fa-image"></i>️ ${q.imageData?'Change':'Add'} Image</button>
+      <button type="button" onclick="ebOpenImgUpload(${sIdx},${qIdx})" class="btn btn-outline btn-sm" style="font-size:.75rem"><i class="fa-regular fa-image"></i> ${q.imageData?'Change':'Upload'} Image</button>
+      <button type="button" onclick="ebOpenAIImagePrompt(${sIdx},${qIdx})" class="btn btn-outline btn-sm" style="font-size:.75rem;color:var(--primary);border-color:var(--primary)"><i class="fa-solid fa-wand-magic-sparkles"></i> AI Image</button>
       ${q.imageData ? `
         <button type="button" onclick="ebRemoveImg(${sIdx},${qIdx})" class="btn btn-sm" style="color:var(--danger);font-size:.75rem;background:none;border:none"><i class="fa-solid fa-xmark"></i> Remove</button>
         <div style="margin-top:.35rem;position:relative;display:inline-block">
@@ -13850,15 +16055,20 @@ function ebRenderQCard(sIdx, qIdx, q, sec) {
           </div>`).join('')}
       </div>
       ${imgSection}`;
-  } else if (sec.type === 'structured') {
+  } else if (sec.type === 'structured' || sec.type === 'comprehension') {
     body = `
       <textarea class="eb-qtextarea" id="ebqt-${sIdx}-${qIdx}" placeholder="Question text..." onchange="ebUpdateQ(${sIdx},${qIdx},'question',this.value)">${ebEscape(q.question||'')}</textarea>
       <div class="eb-qmeta">
         <label>Marks:</label><input type="number" value="${q.marks||6}" min="1" max="100" onchange="ebUpdateQ(${sIdx},${qIdx},'marks',parseInt(this.value))"/>
-        <button class="btn btn-outline btn-sm" onclick="ebOpenSubParts(${sIdx},${qIdx})" style="font-size:.76rem">≡ Sub-parts ${q.subParts?.length?`(${q.subParts.length})`:''}</button>
+        ${sec.type==='structured'?`<button class="btn btn-outline btn-sm" onclick="ebOpenSubParts(${sIdx},${qIdx})" style="font-size:.76rem">≡ Sub-parts ${q.subParts?.length?`(${q.subParts.length})`:''}</button>`:''}
       </div>
       ${q.subParts?.length ? `<div style="margin-top:.4rem;font-size:.76rem;color:var(--muted);padding:4px 8px;background:var(--bg);border-radius:5px">Sub-parts: ${q.subParts.map((p,i) => `(${String.fromCharCode(97+i)}) ${p.text.substring(0,25)}…`).join(' | ')}</div>` : ''}
-      ${imgSection}`;
+      ${imgSection}
+      <div style="margin-top:.4rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+        <button type="button" onclick="ebGenerateDiagram(${sIdx},${qIdx})" class="btn btn-outline btn-sm" style="font-size:.74rem;color:#7c3aed;border-color:#7c3aed"><i class="fa-solid fa-diagram-project"></i> ${q.diagram?'Regenerate':'AI Diagram'}</button>
+        ${q.diagram?`<button type="button" onclick="ebRemoveDiagram(${sIdx},${qIdx})" class="btn btn-sm" style="font-size:.74rem;color:var(--danger);background:none;border:1px solid var(--danger)"><i class="fa-solid fa-xmark"></i> Remove Diagram</button>`:''}
+      </div>
+      ${q.diagram?`<div style="margin-top:.35rem;border:1.5px solid #ddd6fe;border-radius:6px;overflow:hidden;background:#faf5ff;padding:6px">${q.diagram}</div>`:''}` ;
   } else {
     body = `
       <textarea class="eb-qtextarea" id="ebqt-${sIdx}-${qIdx}" placeholder="Essay question..." onchange="ebUpdateQ(${sIdx},${qIdx},'question',this.value)">${ebEscape(q.question||'')}</textarea>
@@ -13875,6 +16085,7 @@ function ebRenderQCard(sIdx, qIdx, q, sec) {
         ${badge}
         <div style="margin-left:auto;display:flex;gap:.3rem">
           <button onclick="ebOpenMathModal('ebqt-${sIdx}-${qIdx}')" style="background:none;border:none;cursor:pointer;font-size:.82rem;color:var(--muted)" title="Insert equation">√</button>
+          <button onclick="ebOpenSingleQModal(${sIdx},${qIdx})" style="background:none;border:none;cursor:pointer;font-size:.82rem;color:var(--primary);padding:2px 5px;border-radius:4px;border:1px solid var(--primary)" title="AI: regenerate this question"><i class="fa-solid fa-robot"></i></button>
           <button onclick="ebRemoveQ(${sIdx},${qIdx})" style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:.9rem" title="Delete"><i class="fa-solid fa-xmark"></i></button>
         </div>
       </div>
@@ -13884,12 +16095,178 @@ function ebRenderQCard(sIdx, qIdx, q, sec) {
 
 function ebAddQuestion(sIdx) {
   const sec = EB.sections[sIdx]; if (!sec) return;
-  sec.questions.push({ id:ebGenId(), question:'', marks:sec.marksPerQuestion||2, options:sec.type==='mcq'?['','','','']:[], answer:sec.type==='mcq'?'A':'', subParts:[], aiGenerated:false });
+  sec.questions.push({ id:ebGenId(), question:'', marks:sec.marksPerQuestion||2, options:sec.type==='mcq'?['','','','']:[], answer:sec.type==='mcq'?'A':'', subParts:[], aiGenerated:false, diagram:null });
   ebRenderQuestionBuilder();
   setTimeout(() => { const ta = document.getElementById(`ebqt-${sIdx}-${sec.questions.length-1}`); if(ta) ta.focus(); }, 80);
 }
 function ebRemoveQ(sIdx, qIdx) { EB.sections[sIdx].questions.splice(qIdx,1); ebRenderQuestionBuilder(); }
 function ebUpdateQ(sIdx, qIdx, key, value) { if (EB.sections[sIdx]?.questions[qIdx]) EB.sections[sIdx].questions[qIdx][key] = value; }
+
+// ─── Comprehension Helpers ────────────────────────────────────────────────────
+function ebPassageImageUpload(sIdx) {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'image/*';
+  inp.onchange = e => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => { EB.sections[sIdx].passageImage = ev.target.result; ebRenderQuestionBuilder(); };
+    reader.readAsDataURL(file);
+  };
+  inp.click();
+}
+function ebRemovePassageImage(sIdx) { EB.sections[sIdx].passageImage = null; ebRenderQuestionBuilder(); }
+
+// ─── AI Image Prompt for individual question ──────────────────────────────────
+function ebOpenAIImagePrompt(sIdx, qIdx) {
+  const q = EB.sections[sIdx]?.questions[qIdx]; if (!q) return;
+  const defaultDesc = q.question ? q.question.substring(0, 80) : '';
+  const desc = window.prompt('Describe the image to generate (or leave blank to auto-generate from question):', defaultDesc);
+  if (desc === null) return; // cancelled
+  ebAIGenerateQImage(sIdx, qIdx, desc || q.question || '');
+}
+async function ebAIGenerateQImage(sIdx, qIdx, description) {
+  const q = EB.sections[sIdx]?.questions[qIdx]; if (!q) return;
+  ebShowLoading('Generating AI illustration...');
+  try {
+    const subject = document.getElementById('eb-subject')?.value || '';
+    const fullDesc = description + (subject ? ' (' + subject + ')' : '');
+    const dataUrl = await ebGenerateIllustrationAPI(fullDesc);
+    q.imageData = dataUrl;
+    q.imageHeight = 160;
+    ebRenderQuestionBuilder();
+    showToast('Image generated! <i class="fa-solid fa-check"></i>', 'success');
+  } catch(err) { showToast('Image generation failed: ' + err.message, 'error'); }
+  finally { ebHideLoading(); }
+}
+
+// ─── AI Diagram Generation ────────────────────────────────────────────────────
+function ebRemoveDiagram(sIdx, qIdx) {
+  if (EB.sections[sIdx]?.questions[qIdx]) { EB.sections[sIdx].questions[qIdx].diagram = null; ebRenderQuestionBuilder(); }
+}
+
+async function ebGenerateDiagram(sIdx, qIdx) {
+  const sec = EB.sections[sIdx]; if (!sec) return;
+  const q = sec.questions[qIdx]; if (!q) return;
+  if (!q.question?.trim()) { showToast('Add a question first before generating a diagram.', 'error'); return; }
+  ebShowLoading('Generating AI diagram...');
+  try {
+    const subject = document.getElementById('eb-subject')?.value || '';
+    const svgCode = await ebGenerateDiagramAPI(q.question, subject);
+    if (svgCode) {
+      q.diagram = svgCode;
+      ebRenderQuestionBuilder();
+      showToast('Diagram generated! <i class="fa-solid fa-check"></i>', 'success');
+    }
+  } catch(err) { showToast('Diagram generation failed: ' + err.message, 'error'); }
+  finally { ebHideLoading(); }
+}
+
+async function ebGenerateDiagramAPI(questionText, subject) {
+  const system = `You are an expert SVG diagram creator for educational exam papers.
+Create clear, labeled, black-and-white SVG diagrams suitable for printing.
+OUTPUT RULES:
+- Output ONLY raw SVG code starting with <svg and ending with </svg>
+- No markdown, no prose, no code fences
+- Use viewBox="0 0 400 300" width="400" height="300"
+- Use only black (#000), dark gray (#333), light gray (#eee), white (#fff) colors
+- Include clear labels using <text> elements, font-size="12" font-family="Arial,sans-serif"
+- Make diagrams clean, educational, and print-ready
+- For biology: draw anatomical diagrams with labels
+- For chemistry: draw molecular structures, apparatus, or reaction diagrams  
+- For physics: draw force diagrams, circuits, ray diagrams with arrows
+- For geography: draw simple maps, cross-sections, or climate graphs
+- For math: draw geometric shapes, graphs, or number lines
+- Always include a brief <title> element describing the diagram`;
+  const prompt = `Create an educational SVG diagram for this exam question:
+Subject: ${subject || 'General'}
+Question: "${questionText}"
+Generate an appropriate labeled diagram that helps illustrate or complement this question.`;
+  const text = await ebCallClaude(prompt, system);
+  // Extract SVG from response
+  const svgMatch = text.match(/<svg[\s\S]*?<\/svg>/i);
+  return svgMatch ? svgMatch[0] : null;
+}
+
+// ─── AI Generate from Comprehension Passage ───────────────────────────────────
+function ebOpenComprehensionAI(sIdx) {
+  const sec = EB.sections[sIdx]; if (!sec) return;
+  if (!sec.passageText?.trim() && !sec.passageImage) {
+    showToast('Please add a passage (text or image) first before generating questions.', 'error');
+    return;
+  }
+  EB.aiSectionIdx = sIdx;
+  const modal = document.getElementById('ebComprehensionAIModal');
+  if (!modal) { ebBuildComprehensionAIModal(); }
+  const m = document.getElementById('ebComprehensionAIModal');
+  m.querySelector('#compAI-secName').textContent = sec.name;
+  m.querySelector('#compAI-count').value = sec.questionCount || 5;
+  m.style.display = 'flex';
+}
+function ebBuildComprehensionAIModal() {
+  const el = document.createElement('div');
+  el.id = 'ebComprehensionAIModal';
+  el.className = 'eb-modal-overlay';
+  el.innerHTML = `<div class="eb-modal" style="max-width:420px">
+    <div class="eb-modal-hd"><span>🤖 AI: Generate from Passage</span><button onclick="document.getElementById('ebComprehensionAIModal').style.display='none'" style="background:none;border:none;font-size:1.2rem;cursor:pointer;color:var(--muted)">&times;</button></div>
+    <div style="padding:1rem">
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:.75rem">Section <strong id="compAI-secName"></strong> — AI will read your passage and generate comprehension questions automatically.</p>
+      <div style="margin-bottom:.75rem"><label style="font-size:.82rem;font-weight:600">Number of questions</label>
+        <input id="compAI-count" type="number" value="5" min="1" max="20" style="width:80px;margin-left:.5rem;padding:4px 8px;border:1.5px solid var(--border-lt);border-radius:6px"/>
+      </div>
+      <div style="margin-bottom:.75rem"><label style="font-size:.82rem;font-weight:600">Difficulty</label>
+        <div style="display:flex;gap:.35rem;margin-top:.3rem" id="compAI-diffBtns">
+          <button class="btn btn-outline btn-sm eb-comp-diff active" data-diff="easy" onclick="ebSetCompDiff(this,'easy')">Easy</button>
+          <button class="btn btn-outline btn-sm eb-comp-diff" data-diff="medium" onclick="ebSetCompDiff(this,'medium')">Medium</button>
+          <button class="btn btn-outline btn-sm eb-comp-diff" data-diff="hard" onclick="ebSetCompDiff(this,'hard')">Hard</button>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="ebDoComprehensionAI()" style="width:100%"><i class="fa-solid fa-robot"></i> Generate Questions</button>
+    </div>
+  </div>`;
+  document.body.appendChild(el);
+}
+let _compAIDiff = 'medium';
+function ebSetCompDiff(btn, diff) {
+  _compAIDiff = diff;
+  document.querySelectorAll('.eb-comp-diff').forEach(b => b.classList.toggle('active', b.dataset.diff === diff));
+}
+async function ebDoComprehensionAI() {
+  const modal = document.getElementById('ebComprehensionAIModal');
+  if (modal) modal.style.display = 'none';
+  const sec = EB.sections[EB.aiSectionIdx]; if (!sec) return;
+  const count = parseInt(document.getElementById('compAI-count')?.value) || 5;
+  const passage = sec.passageText || '';
+  const subtype = sec.comprehensionSubtype || 'comprehension';
+  const subtypeLabel = {comprehension:'comprehension',literary:'literary comprehension',poetry:'poetry'}[subtype];
+  ebShowLoading('Generating comprehension questions...');
+  try {
+    const system = `You are an expert ${subtypeLabel} question creator for Kenyan secondary school exams.
+OUTPUT RULES — CRITICAL:
+- Output ONLY raw JSON. No prose, no markdown, no code fences.
+- Start with { and end with }
+- Structure: {"questions":[{"question":"...","marks":2,"subParts":[]}]}
+- For poetry: include questions about literary devices, tone, theme, imagery
+- For literary comprehension: include questions about character, plot, setting, language
+- For general comprehension: include questions about main idea, vocabulary, inference
+- Do NOT include any text before or after the JSON.`;
+    const prompt = `Generate ${count} ${subtypeLabel} questions (difficulty: ${_compAIDiff}) based on this passage:
+
+"${passage.substring(0,3000)}"
+
+Return ONLY the JSON.`;
+    const text = await ebCallClaude(prompt, system);
+    const parsed = ebExtractJSON(text);
+    const questions = parsed?.questions || [];
+    let added = 0;
+    questions.forEach(q => {
+      sec.questions.push({ id:ebGenId(), question:q.question||'', marks:q.marks||sec.marksPerQuestion||3, options:[], answer:'', subParts:[], aiGenerated:true, diagram:null });
+      added++;
+    });
+    ebRenderQuestionBuilder();
+    showToast(`Generated ${added} comprehension questions! <i class="fa-solid fa-check"></i>`, 'success');
+  } catch(err) { showToast('Generation failed: ' + err.message, 'error'); }
+  finally { ebHideLoading(); }
+}
 function ebUpdateOpt(sIdx, qIdx, oi, value) {
   const q = EB.sections[sIdx]?.questions[qIdx]; if (!q) return;
   if (!q.options) q.options = ['','','',''];
@@ -13961,13 +16338,14 @@ function ebRenderPreview() {
     const isMcq = sec.type === 'mcq';
     const isEssay = sec.type === 'essay';
     const isStructured = sec.type === 'structured';
+    const isComprehension = sec.type === 'comprehension';
     const isShortAnswer = isStructured && sec.questions.length >= 2 && sec.questions.every(q => (q.marks||0) <= 4 && !q.subParts?.length);
 
     let questionsHtml = '';
 
     if (isMcq) {
       // ── Two-column MCQ — NO examiner boxes ──
-      questionsHtml = `<div class="ebep-mcq-grid">` +
+      questionsHtml = `<div class="ebep-mcq-grid" style="position:relative"><div class="ebep-mcq-col-divider"></div>` +
         sec.questions.map((q, qIdx) => `
           <div class="ebep-q" style="break-inside:avoid;padding:.25rem 0">
             <strong>${qIdx+1}. ${ebEscape(q.question||'[Question text]')}</strong>
@@ -14025,16 +16403,28 @@ function ebRenderPreview() {
               ${!hasSubParts ? examBox(q.marks) : ''}
             </div>
             ${q.imageData ? `<img src="${q.imageData}" class="ebep-q-img" style="max-height:${q.imageHeight||150}px;margin-top:.3rem"/>` : ''}
+            ${q.diagram ? `<div style="margin:.3rem 0;border:1px solid #ddd;border-radius:3px;overflow:hidden;background:#fafafa;padding:4px;text-align:center">${q.diagram}</div>` : ''}
             ${subPartsHtml}
           </div>`;
       }).join('');
     }
 
     const totalSectionMarks = sec.questions.reduce((s,q) => s + (q.marks||0), 0) || sec.totalMarks;
+    const subtypeMap = {comprehension:'Comprehension',literary:'Literary Comprehension',poetry:'Poetry'};
+    const sectionLabel = isComprehension ? (subtypeMap[sec.comprehensionSubtype||'comprehension']||'Comprehension').toUpperCase() : ebTypeLabel(sec.type).toUpperCase();
+    const passageHtml = isComprehension ? `
+      <div style="border:1.5px solid #333;padding:.6rem .8rem;margin-bottom:.75rem;border-radius:2px;background:#fafafa">
+        <div style="font-size:.7rem;font-weight:900;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid #ccc;padding-bottom:.25rem;margin-bottom:.4rem">${subtypeMap[sec.comprehensionSubtype||'comprehension']||'Comprehension'} Passage</div>
+        ${sec.passageImage?`<img src="${sec.passageImage}" style="max-width:100%;max-height:280px;display:block;margin-bottom:.4rem"/>`:''} 
+        ${sec.passageText?`<div style="font-size:.85rem;line-height:1.75;font-family:Georgia,serif;white-space:pre-wrap">${ebEscape(sec.passageText)}</div>`:''}
+        ${!sec.passageText&&!sec.passageImage?`<div style="color:#aaa;font-size:.78rem;text-align:center">[No passage added]</div>`:''}
+      </div>
+      <div style="font-size:.82rem;font-style:italic;margin-bottom:.4rem">Answer the following questions based on the passage above.</div>` : '';
     return `
       <div style="break-before:${sIdx===0?'avoid':'page'}">
-        <div class="ebep-sectitle">SECTION ${ebEscape(sec.name)}: ${ebTypeLabel(sec.type).toUpperCase()} (${totalSectionMarks} MARKS)</div>
+        <div class="ebep-sectitle">SECTION ${ebEscape(sec.name)}: ${sectionLabel} (${totalSectionMarks} MARKS)</div>
         ${sec.instruction ? `<div style="font-style:italic;font-size:.82rem;margin-bottom:.5rem;text-align:center">${ebEscape(sec.instruction)}</div>` : ''}
+        ${passageHtml}
         ${questionsHtml}
         ${!sec.questions.length ? `<div style="color:#aaa;font-size:.78rem;text-align:center">[No questions added yet]</div>` : ''}
       </div>`;
@@ -14266,44 +16656,64 @@ function updateExamDlFeeNotice() {
   const notice = document.getElementById('ebDlFeeNotice');
   if (!notice) return;
   const role = currentUser && currentUser.role;
-  if (role === 'teacher' || role === 'guest') {
-    const fee = getExamDlFee();
-    if (fee > 0 && !isSchoolExamDlUnlocked(currentSchoolId)) {
-      notice.style.display = '';
-      notice.innerHTML = `<i class="fa-solid fa-lock"></i> KES ${fee.toLocaleString()} fee required to download/print`;
-    } else {
-      notice.style.display = 'none';
-    }
+  if (role === 'platform_admin') { notice.style.display = 'none'; return; }
+  const totalMarks = EB.sections.reduce((s,sec)=>s+(sec.totalMarks||0),0);
+  const fee = getExamDlFeeForMarks(totalMarks);
+  const paperKey = (currentSchoolId||'local') + ':live:' + totalMarks;
+  if (!isPaperUnlocked(paperKey) && !isSchoolExamDlUnlocked(currentSchoolId)) {
+    notice.style.display = '';
+    notice.innerHTML = `<i class="fa-solid fa-lock"></i> KES ${fee.toLocaleString()} required to download/print this ${totalMarks}-mark paper`;
   } else {
     notice.style.display = 'none';
   }
 }
 
-function checkExamDlAllowed() {
+function checkExamDlAllowed(totalMarks, paperKey) {
   if (!currentUser) return false;
   const role = currentUser.role;
-  // Admin/superadmin/platform_admin/student always allowed (student can't reach exam builder)
-  if (role === 'admin' || role === 'superadmin' || role === 'platform_admin') return true;
-  // Teacher or guest: check fee
-  if (role === 'teacher' || role === 'guest') {
-    const fee = getExamDlFee();
-    if (!fee || fee <= 0) return true; // free
-    // Check if current school is unlocked
+  // Only platform_admin is always allowed
+  if (role === 'platform_admin') return true;
+  // Everyone else (admin, superadmin, teacher, guest, student) is gated
+  {
+    const fee = getExamDlFeeForMarks(totalMarks || 0);
+    // Check if this specific paper has been unlocked (admin confirmed payment)
+    const key = paperKey || (currentSchoolId + ':marks' + (totalMarks||0));
+    if (isPaperUnlocked(key)) return true;
+    // Also check legacy school-wide unlock
     if (currentSchoolId && isSchoolExamDlUnlocked(currentSchoolId)) return true;
-    // Blocked — show paywall message
+    // Build tier table for modal
+    const tiers = [
+      { label:'Up to 30 marks',   price:30 },
+      { label:'Up to 50 marks',   price:60 },
+      { label:'Up to 80 marks',   price:80 },
+      { label:'Up to 100 marks',  price:100 },
+      { label:'Up to 150 marks',  price:200 },
+      { label:'200+ marks',       price:1000 },
+    ];
+    const tierRows = tiers.map(t =>
+      `<tr style="${fee===t.price?'background:#f5f3ff;font-weight:700':''}">
+        <td style="padding:.3rem .6rem;border:1px solid #e2e8f0">${t.label}</td>
+        <td style="padding:.3rem .6rem;border:1px solid #e2e8f0;text-align:right;color:${fee===t.price?'#7c3aed':'#334155'}">KES ${t.price}</td>
+      </tr>`).join('');
     showModal(
-      '<i class="fa-solid fa-lock"></i> Download/Print Locked',
-      `<div style="text-align:center;padding:1rem 0">
-        <div style="font-size:2.5rem;margin-bottom:.75rem"><i class="fa-solid fa-lock"></i></div>
-        <div style="font-weight:700;font-size:1rem;margin-bottom:.5rem">Payment Required</div>
-        <div style="color:var(--muted);font-size:.85rem;margin-bottom:1.25rem;line-height:1.6">
-          Printing and downloading exam papers requires a platform fee of<br>
-          <strong style="color:#7c3aed;font-size:1.1rem">KES ${fee.toLocaleString()}</strong><br>
-          per school term. Please pay via M-Pesa or school cashier and ask<br>
-          your Platform Administrator to unlock your school.
+      '<i class="fa-solid fa-lock"></i> Download Locked',
+      `<div style="text-align:center;padding:.75rem 0">
+        <div style="font-size:2.5rem;margin-bottom:.6rem">🔒</div>
+        <div style="font-weight:700;font-size:1rem;margin-bottom:.35rem">Payment Required</div>
+        <div style="color:var(--muted);font-size:.83rem;margin-bottom:1rem;line-height:1.6">
+          This paper has <strong>${totalMarks||0} marks</strong>.<br>
+          The download fee for this paper is <strong style="color:#7c3aed;font-size:1.05rem">KES ${fee}</strong>.
         </div>
-        <div style="background:rgba(124,58,237,.07);border-radius:9px;padding:.75rem 1rem;font-size:.8rem;color:#475569">
-          <i class="fa-solid fa-phone"></i> Contact your Platform Admin to confirm payment and unlock access.
+        <table style="border-collapse:collapse;width:100%;font-size:.8rem;margin-bottom:1rem;text-align:left">
+          <thead><tr style="background:#f8fafc">
+            <th style="padding:.3rem .6rem;border:1px solid #e2e8f0">Paper Size</th>
+            <th style="padding:.3rem .6rem;border:1px solid #e2e8f0;text-align:right">Fee (KES)</th>
+          </tr></thead>
+          <tbody>${tierRows}</tbody>
+        </table>
+        <div style="background:rgba(124,58,237,.07);border-radius:9px;padding:.65rem 1rem;font-size:.78rem;color:#475569">
+          <i class="fa-solid fa-phone"></i> Pay via M-Pesa or school cashier, then ask your<br>
+          <strong>Platform Administrator</strong> to unlock this paper for you.
         </div>
       </div>`,
       []
@@ -14314,17 +16724,21 @@ function checkExamDlAllowed() {
 }
 
 function ebExportPDF() {
-  if (!checkExamDlAllowed()) return;
   ebSyncDOM();
   const header = ebGetHeader();
   const instructions = ebGetInstructions();
   const totalMarks = EB.sections.reduce((s,sec) => s+(sec.totalMarks||0), 0);
+  const paperKey = (currentSchoolId||'local') + ':live:' + totalMarks;
+  if (!checkExamDlAllowed(totalMarks, paperKey)) return;
   ebClientSidePDF({ header, instructions, sections: EB.sections, totalMarks });
 }
 function ebExportExamPDF(id) {
-  if (!checkExamDlAllowed()) return;
   const exam = ebLoad().find(e => e.id === id);
-  if (exam) ebClientSidePDF(exam);
+  if (!exam) return;
+  const totalMarks = exam.totalMarks || (exam.sections||[]).reduce((s,sec)=>s+(sec.totalMarks||0),0);
+  const paperKey = (currentSchoolId||'local') + ':' + id;
+  if (!checkExamDlAllowed(totalMarks, paperKey)) return;
+  ebClientSidePDF(exam);
 }
 function ebClientSidePDF(exam) {
   if (!window.jspdf) { showToast('PDF library not loaded', 'error'); return; }
@@ -14339,20 +16753,20 @@ function ebClientSidePDF(exam) {
 
   const addPage = (need=10) => { if (y+need > maxY) { doc.addPage(); y=15; addFooter(); } };
   const addFooter = () => {
-    doc.setFont('Helvetica','italic'); doc.setFontSize(7.5); doc.setTextColor(100);
+    doc.setFont('Times','italic'); doc.setFontSize(7.5); doc.setTextColor(100);
     doc.text(`${subjectFooter}  \u2022  ${schoolName}  \u2022  ${dateStr}`, 105, 291, {align:'center'});
     doc.setLineWidth(.2); doc.setDrawColor(180); doc.line(lm, 288, lm+pw, 288);
     doc.setTextColor(0); doc.setDrawColor(0);
   };
 
   // ── PAGE 1: HEADER ──
-  doc.setFont('Helvetica','bold'); doc.setFontSize(18);
+  doc.setFont('Times','bold'); doc.setFontSize(18);
   doc.text(schoolName, 105, y, {align:'center'}); y+=9;
   doc.setFontSize(13);
   doc.text(`${(header.subject||'').toUpperCase()} \u2013 ${(header.class||'').toUpperCase()}`, 105, y, {align:'center'}); y+=7;
   doc.setFontSize(11);
   doc.text(`${(header.examType||'').toUpperCase()}  \u2022  ${header.term||''}  ${header.year||''}`, 105, y, {align:'center'}); y+=6;
-  doc.setFont('Helvetica','normal'); doc.setFontSize(10);
+  doc.setFont('Times','normal'); doc.setFontSize(10);
   doc.text(`TIME ALLOWED: ${header.duration||'___ Hours'}     DATE: ${dateStr}     TOTAL MARKS: ${totalMarks}`, 105, y, {align:'center'}); y+=4;
   doc.setLineWidth(1); doc.line(lm, y, lm+pw, y); y+=6;
 
@@ -14361,7 +16775,7 @@ function ebClientSidePDF(exam) {
   const rowH=6.5; const col1=55;
   [['Candidate\'s Name:',''],['Admission No.:',''],['Class / Stream:',''],['Signature:','']].forEach((row,i) => {
     const ry = y+i*rowH+1.5;
-    doc.setFont('Helvetica','bold'); doc.setFontSize(9); doc.text(row[0], lm+2, ry+4);
+    doc.setFont('Times','bold'); doc.setFontSize(9); doc.text(row[0], lm+2, ry+4);
     doc.setLineWidth(.2); doc.line(lm+col1, ry+4.5, lm+pw-2, ry+4.5);
     if (i<3) { doc.setLineWidth(.2); doc.line(lm, y+(i+1)*rowH, lm+pw, y+(i+1)*rowH); }
   });
@@ -14373,7 +16787,7 @@ function ebClientSidePDF(exam) {
   const secColW = 22; const totalColW = 16;
 
   // Header row
-  doc.setFont('Helvetica','bold'); doc.setFontSize(8);
+  doc.setFont('Times','bold'); doc.setFontSize(8);
   doc.text("FOR EXAMINER'S USE ONLY", 105, y, {align:'center'}); y+=4;
   doc.setFontSize(6.5); doc.setLineWidth(.3);
   let tx = lm;
@@ -14386,9 +16800,9 @@ function ebClientSidePDF(exam) {
   // Section rows
   sections.forEach(sec => {
     let rx = lm;
-    doc.setFont('Helvetica','bold'); doc.setFontSize(7);
+    doc.setFont('Times','bold'); doc.setFontSize(7);
     doc.rect(rx, y, secColW, 10); doc.text(`Sec. ${sec.name}`, rx+2, y+6); rx+=secColW;
-    doc.setFont('Helvetica','normal'); doc.setFontSize(6);
+    doc.setFont('Times','normal'); doc.setFontSize(6);
     sec.questions.forEach((q, qi) => {
       doc.rect(rx, y, colW, 10);
       // Sub-part label
@@ -14405,13 +16819,13 @@ function ebClientSidePDF(exam) {
     const secTotal = sec.questions.reduce((s,q)=>s+(q.marks||0),0)||sec.totalMarks;
     doc.rect(rx, y, totalColW, 10);
     doc.setDrawColor(150); doc.line(rx+1, y+6, rx+totalColW-1, y+6); doc.setDrawColor(0);
-    doc.setFont('Helvetica','normal'); doc.setFontSize(6);
+    doc.setFont('Times','normal'); doc.setFontSize(6);
     doc.text(`/${secTotal}`, rx+totalColW/2, y+9, {align:'center'});
     y+=10;
   });
 
   // Grand total + grade rows
-  doc.setFont('Helvetica','bold'); doc.setFontSize(7);
+  doc.setFont('Times','bold'); doc.setFontSize(7);
   const totRowX = lm+secColW+maxQs*colW;
   doc.rect(lm, y, secColW+maxQs*colW, 8); doc.text('GRAND TOTAL', lm+2, y+5.5);
   doc.rect(totRowX, y, totalColW, 8);
@@ -14426,8 +16840,8 @@ function ebClientSidePDF(exam) {
 
   // Instructions on cover
   if (instructions?.length) {
-    doc.setFont('Helvetica','bold'); doc.setFontSize(10); doc.text('INSTRUCTIONS TO CANDIDATES:', lm, y); y+=5;
-    doc.setFont('Helvetica','normal'); doc.setFontSize(9);
+    doc.setFont('Times','bold'); doc.setFontSize(10); doc.text('INSTRUCTIONS TO CANDIDATES:', lm, y); y+=5;
+    doc.setFont('Times','normal'); doc.setFontSize(9);
     instructions.forEach((t,i) => { addPage(5); const ls=doc.splitTextToSize(`${i+1}. ${t}`, pw-60); doc.text(ls, lm, y); y+=ls.length*4.5; });
     y+=2;
   }
@@ -14436,17 +16850,36 @@ function ebClientSidePDF(exam) {
   // ── SECTIONS (page 2 onwards) ──
   sections.forEach((sec, sIdx) => {
     doc.addPage(); y=15; addFooter();
-    doc.setFont('Helvetica','bold'); doc.setFontSize(11);
+    doc.setFont('Times','bold'); doc.setFontSize(11);
     const secTitle = `SECTION ${sec.name}: ${ebTypeLabel(sec.type).toUpperCase()} (${sec.questions.reduce((s,q)=>s+(q.marks||0),0)||sec.totalMarks} MARKS)`;
     doc.text(secTitle, 105, y, {align:'center'}); y+=6;
     if (sec.instruction) {
-      doc.setFont('Helvetica','italic'); doc.setFontSize(9);
+      doc.setFont('Times','italic'); doc.setFontSize(9);
       const ils = doc.splitTextToSize(sec.instruction, pw); doc.text(ils, 105, y, {align:'center'}); y+=ils.length*4.5;
     }
     y+=2;
 
     const isMcq = sec.type === 'mcq';
+    const isComprehensionSec = sec.type === 'comprehension';
     const isShortAnswer = sec.type === 'structured' && sec.questions.length >= 2 && sec.questions.every(q=>(q.marks||0)<=4 && !q.subParts?.length);
+    // For comprehension: render passage first
+    if (isComprehensionSec) {
+      const subtypeLabel = {comprehension:'Comprehension Passage',literary:'Literary Extract',poetry:'Poem / Verse'}[sec.comprehensionSubtype||'comprehension'];
+      doc.setFont('Times','bold'); doc.setFontSize(8.5);
+      doc.text(subtypeLabel.toUpperCase(), lm, y); y+=5;
+      doc.setLineWidth(.4); doc.rect(lm, y, pw, 2); y+=3;
+      if (sec.passageText) {
+        doc.setFont('Times','normal'); doc.setFontSize(9);
+        const pls = doc.splitTextToSize(sec.passageText, pw); 
+        pls.forEach(line => { addPage(5); doc.text(line, lm, y); y+=4.5; });
+      } else {
+        doc.setFont('Times','italic'); doc.setFontSize(8.5);
+        doc.text('[Passage image — see printed exam]', lm, y); y+=5;
+      }
+      doc.setLineWidth(.4); doc.rect(lm, y, pw, 2); y+=5;
+      doc.setFont('Times','italic'); doc.setFontSize(8.5);
+      doc.text('Answer the following questions based on the passage above.', lm, y); y+=5;
+    }
 
     if (isMcq) {
       // ── Two-column MCQ — NO examiner boxes ──
@@ -14458,15 +16891,20 @@ function ebClientSidePDF(exam) {
           const qNum = startIdx+qi+1;
           const qLines = doc.splitTextToSize(`${qNum}. ${q.question||'[Question]'}  (${q.marks}mk)`, colW2-4);
           if (cy+14 > maxY) { doc.addPage(); cy=15; addFooter(); }
-          doc.setFont('Helvetica','bold'); doc.setFontSize(9.5); doc.text(qLines, x, cy); cy+=qLines.length*5;
-          const labs=['A)','B)','C)','D)']; doc.setFont('Helvetica','normal'); doc.setFontSize(9);
-          (q.options||[]).forEach((o,oi) => { if(o){ doc.text(`  ${labs[oi]} ${o}`, x, cy); cy+=4.5; } });
-          cy+=4;
+          doc.setFont('Times','bold'); doc.setFontSize(9.5); doc.text(qLines, x, cy); cy+=qLines.length*6;
+          const labs=['A)','B)','C)','D)']; doc.setFont('Times','normal'); doc.setFontSize(9);
+          (q.options||[]).forEach((o,oi) => { if(o){ doc.text(`  ${labs[oi]} ${o}`, x, cy); cy+=5.5; } });
+          cy+=5;
         });
         return cy;
       };
       const lyEnd = renderMcqCol(sec.questions.slice(0,half), 0, lm);
       const ryEnd = renderMcqCol(sec.questions.slice(half), half, col2X);
+      // ── Vertical separator between columns ──
+      const divX = lm + colW2 + 3;
+      doc.setDrawColor(150); doc.setLineWidth(.3);
+      doc.line(divX, y-2, divX, Math.max(lyEnd, ryEnd)+2);
+      doc.setDrawColor(0); doc.setLineWidth(.4);
       y = Math.max(lyEnd, ryEnd)+4;
 
     } else if (isShortAnswer) {
@@ -14478,7 +16916,7 @@ function ebClientSidePDF(exam) {
           const q = sec.questions[i+ci]; if(!q) return;
           const bx = lm+ci*(colW2+4);
           doc.setLineWidth(.4); doc.rect(bx, y, colW2, boxH);
-          doc.setFont('Helvetica','bold'); doc.setFontSize(9);
+          doc.setFont('Times','bold'); doc.setFontSize(9);
           const qls = doc.splitTextToSize(`${i+ci+1}. ${q.question||'[Question]'}  (${q.marks}mk)`, colW2-4);
           doc.text(qls, bx+2, y+5);
         });
@@ -14493,14 +16931,14 @@ function ebClientSidePDF(exam) {
         addPage(Math.min(needH, 40));
 
         // Question stem
-        doc.setFont('Helvetica','bold'); doc.setFontSize(10);
+        doc.setFont('Times','bold'); doc.setFontSize(10);
         const qText = hasSubParts ? `${qIdx+1}. ${q.question||'[Question]'}` : `${qIdx+1}. ${q.question||'[Question]'}  (${q.marks} marks)`;
         const qls = doc.splitTextToSize(qText, pw-36); doc.text(qls, lm, y);
 
         if (!hasSubParts) {
           // Small examiner box right-side
           doc.setLineWidth(.3); doc.rect(lm+pw-32, y-5, 30, 10);
-          doc.setFont('Helvetica','normal'); doc.setFontSize(6); doc.text("Examr. Use Only", lm+pw-17, y-3, {align:'center'});
+          doc.setFont('Times','normal'); doc.setFontSize(6); doc.text("Examr. Use Only", lm+pw-17, y-3, {align:'center'});
           doc.setLineWidth(.2); doc.line(lm+pw-32, y+1, lm+pw-2, y+1);
           doc.setFontSize(7.5); doc.text(`/${q.marks}`, lm+pw-17, y+4, {align:'center'});
         }
@@ -14510,13 +16948,13 @@ function ebClientSidePDF(exam) {
           // Each sub-part: "1a. text (marks)" then lines
           q.subParts.forEach((p, pi) => {
             addPage(20);
-            doc.setFont('Helvetica','bold'); doc.setFontSize(9.5);
+            doc.setFont('Times','bold'); doc.setFontSize(9.5);
             const spLabel = `${qIdx+1}${subLetters[pi]}. `;
             const spText = doc.splitTextToSize(`${spLabel}${p.text}`, pw-36);
             doc.text(spText, lm, y);
             // Small examiner box
             doc.setLineWidth(.3); doc.rect(lm+pw-32, y-4, 30, 9);
-            doc.setFont('Helvetica','normal'); doc.setFontSize(6); doc.text("Examr.", lm+pw-17, y-2, {align:'center'});
+            doc.setFont('Times','normal'); doc.setFontSize(6); doc.text("Examr.", lm+pw-17, y-2, {align:'center'});
             doc.setLineWidth(.2); doc.line(lm+pw-32, y+1, lm+pw-2, y+1);
             doc.setFontSize(7.5); doc.text(`/${p.marks}`, lm+pw-17, y+3.5, {align:'center'});
             y+=spText.length*4.5;
@@ -14537,74 +16975,99 @@ function ebClientSidePDF(exam) {
     y+=5;
   });
 
-  addPage(10); doc.setFont('Helvetica','bold'); doc.setFontSize(11);
+  addPage(10); doc.setFont('Times','bold'); doc.setFontSize(11);
   doc.text('*** END OF EXAM ***', 105, y, {align:'center'});
   const fn = `${header.schoolName||'Exam'}_${header.subject}_${header.examType}.pdf`.replace(/[^a-z0-9_\-\.]/gi,'_');
   doc.save(fn);
   showToast('PDF downloaded! <i class="fa-solid fa-file-lines"></i>', 'success');
 }
 
-// ─── AI Calls (direct browser → Anthropic API) ───────────────────────────────
+// ─── AI Calls (Groq API) ─────────────────────────────────────────────────────
+// ─── AI Calls (Groq API) ─────────────────────────────────────────────────────
+// ── Robust JSON extractor — handles llama/Groq responses that add preamble text or ```json fences ──
+function ebExtractJSON(text) {
+  if (!text) return null;
+  // Strip markdown code fences
+  let clean = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  // Try direct parse first (ideal case)
+  try { return JSON.parse(clean); } catch(e) {}
+  // Find the outermost JSON object in the text (handles preamble/postamble)
+  const match = clean.match(/\{[\s\S]*\}/);
+  if (match) { try { return JSON.parse(match[0]); } catch(e) {} }
+  // Last resort: find array
+  const arrMatch = clean.match(/\[[\s\S]*\]/);
+  if (arrMatch) { try { return JSON.parse(arrMatch[0]); } catch(e) {} }
+  return null;
+}
+
 function ebGetApiKey() {
-  return load(K.settings)[0]?.ebApiKey || settings?.ebApiKey || '';
+  // Hardcoded key — always available regardless of login context
+  return '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';
 }
 
 async function ebCallClaude(prompt, systemPrompt) {
-  // Try built-in proxy first (works inside claude.ai — no API key needed)
-  const proxyRes = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4000, system: systemPrompt, messages: [{ role: 'user', content: prompt }] })
-  }).catch(() => null);
-
-  if (proxyRes && proxyRes.ok) {
-    const data = await proxyRes.json();
-    return data.content.map(b => b.text || '').join('');
-  }
-
-  // Fallback: user-saved API key
   const key = ebGetApiKey();
-  if (!key) throw new Error('AI requires an Anthropic API key. Go to Settings and paste your sk-ant-... key.');
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  if (!key) throw new Error('No API key found. Go to Platform Admin → AI API Key, paste your Groq key and click Save.');
+  // Validate key format before sending (Groq keys start with gsk_)
+  const cleanKey = key.trim().replace(/^["']|["']$/g, ''); // strip any accidental quotes
+  if (!cleanKey) throw new Error('API key is empty after cleaning. Please re-save your Groq key in Platform Admin.');
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type':'application/json', 'x-api-key': key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4000, system: systemPrompt, messages: [{ role: 'user', content: prompt }] })
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cleanKey}` },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      max_tokens: 4000,
+      messages: [
+        ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+        { role: 'user', content: prompt }
+      ]
+    })
   });
-  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || `API error ${res.status}`); }
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(e.error?.message || `Groq API error ${res.status}`);
+  }
   const data = await res.json();
-  return data.content.map(b => b.text || '').join('');
+  return data.choices?.[0]?.message?.content || '';
 }
 
 async function ebGenerateQuestionsAPI(params) {
   const { subject, topic, questionType, difficulty, count, notes } = params;
-  const diffGuide = { easy:'Simple, direct recall questions.', medium:'Mix of recall and application.', hard:'Analysis, synthesis and evaluation.' };
-  const system = `You are an expert exam paper creator for Kenyan/East African secondary school curriculum. ALWAYS respond with ONLY valid JSON (no markdown):
-{"questions":[{"id":"q1","question":"...","type":"mcq|structured|essay","marks":2,"options":["A) ...","B) ...","C) ...","D) ..."],"answer":"B) ...","explanation":"...","difficulty":"easy|medium|hard","subParts":[]}]}
-For MCQ: 4 options, correct answer. For structured/essay: options=[], answer="".`;
-  const userPrompt = `Generate ${count||5} ${questionType||'mcq'} questions.
-Subject: ${subject||'General'} | Topic: ${topic||'General'} | Difficulty: ${difficulty||'medium'} — ${diffGuide[difficulty]||diffGuide.medium}
-${notes?`Based on: ${notes.substring(0,2500)}`:''}
-Ensure questions test different skills: recall, comprehension, application, analysis.`;
+  const diffGuide = { easy: 'Simple, direct recall questions.', medium: 'Mix of recall and application.', hard: 'Analysis, synthesis and evaluation.' };
+  const withImages = params.withImages || false;
+  const imageField = withImages ? ',"imageQuery":"short 2-3 word image search term for this question (e.g. \"mitosis cell\")"' : '';
+  const system = `You are an exam question generator for Kenyan secondary school curriculum.
+OUTPUT RULES — CRITICAL:
+- Output ONLY a raw JSON object. No prose, no markdown, no code fences, no explanation.
+- Start your response with { and end with }
+- Use exactly this structure:
+{"questions":[{"id":"q1","question":"...","type":"mcq","marks":2,"options":["A) ...","B) ...","C) ...","D) ..."],"answer":"A) ...","explanation":"...","difficulty":"medium","subParts":[]${imageField}}]}
+- For MCQ: include 4 options (A-D), set answer to the correct option text.
+- For structured/essay: options=[], answer="", subParts must always be [].${withImages ? '\n- imageQuery: a short 2-3 word image search term relevant to the question.' : ''}
+- Do NOT include any text before or after the JSON.`;
+  const userPrompt = `Generate ${count || 5} ${questionType || 'mcq'} questions for:
+Subject: ${subject || 'General'} | Topic: ${topic || subject || 'General'} | Difficulty: ${difficulty || 'medium'} (${diffGuide[difficulty] || diffGuide.medium})
+${notes ? 'Use this content as source material: ' + notes.substring(0, 2500) : ''}
+Return ONLY the JSON object.`;
   const text = await ebCallClaude(userPrompt, system);
-  const clean = text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
-  const parsed = JSON.parse(clean);
+  const parsed = ebExtractJSON(text);
+  if (!parsed) throw new Error('AI returned unexpected format. Try again.');
   return parsed.questions || [];
 }
 
 async function ebGenerateMarkingSchemeAPI(exam) {
   const system = 'You are an expert marking scheme creator. Respond ONLY with valid JSON (no markdown): {"scheme":[{"questionRef":"Q1","marks":2,"expectedAnswer":"...","markingPoints":["point1","point2"]}]}';
-  const questionsText = exam.sections.map((sec,si) => `Section ${sec.name} (${sec.type}):\n${sec.questions.map((q,qi) => `Q${qi+1}: ${q.question} (${q.marks} marks)${q.answer?` Answer: ${q.answer}`:''}`).join('\n')}`).join('\n\n');
-  const userPrompt = `Create a marking scheme for:\nSubject: ${exam.header?.subject||''} | Class: ${exam.header?.class||''}\n\n${questionsText}`;
+  const questionsText = exam.sections.map((sec, si) => {
+    const qLines = sec.questions.map((q, qi) => 'Q' + (qi+1) + ': ' + q.question + ' (' + q.marks + ' marks)' + (q.answer ? ' Answer: ' + q.answer : '')).join('\n');
+    return 'Section ' + sec.name + ' (' + sec.type + '):\n' + qLines;
+  }).join('\n\n');
+  const userPrompt = 'Create a marking scheme for:\nSubject: ' + (exam.header?.subject||'') + ' | Class: ' + (exam.header?.class||'') + '\n\n' + questionsText;
   const text = await ebCallClaude(userPrompt, system);
-  const clean = text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
-  return JSON.parse(clean).scheme || [];
+  const parsed = ebExtractJSON(text);
+  if (!parsed) throw new Error('AI returned unexpected format. Try again.');
+  return parsed.scheme || [];
 }
 
-// ─── AI Generator Tab ────────────────────────────────────────────────────────
 let _ebAiDiff = 'easy';
 function ebSetDiff(btn, diff) {
   _ebAiDiff = diff;
@@ -14658,10 +17121,92 @@ function ebaiAddSingle(idx) {
 function ebStagePendingQ(q) {
   const sec = EB.sections.find(s => s.type === q.type) || EB.sections[0];
   if (!sec) return;
-  sec.questions.push({ id:ebGenId(), question:q.question, marks:q.marks||sec.marksPerQuestion||2, options:q.options||[], answer:q.answer||'', subParts:q.subParts||[], aiGenerated:true });
+  sec.questions.push({ id:ebGenId(), question:q.question, marks:q.marks||sec.marksPerQuestion||2, options:q.options||[], answer:q.answer||'', subParts:[], aiGenerated:true });
 }
 
 // ─── AI per-section modal ─────────────────────────────────────────────────────
+// ─── AI: Single Question Regenerate ──────────────────────────────────────────
+function ebOpenSingleQModal(sIdx, qIdx) {
+  EB.aiSectionIdx = sIdx;
+  EB.aiQuestionIdx = qIdx;
+  const sec = EB.sections[sIdx];
+  const q = sec?.questions[qIdx];
+  const modal = document.getElementById('ebSingleQModal');
+  if (!modal) return;
+  document.getElementById('ebSingleQ-secname').textContent = 'Section ' + (sec?.name||'') + ' Q' + (qIdx+1);
+  document.getElementById('ebSingleQ-topic').value = document.getElementById('eb-subject')?.value || '';
+  document.getElementById('ebSingleQ-notes').value = q?.question || '';
+  document.getElementById('ebSingleQ-withImages').checked = false;
+  modal.style.display = 'flex';
+}
+async function ebGenSingleQuestion() {
+  const sIdx = EB.aiSectionIdx;
+  const qIdx = EB.aiQuestionIdx;
+  const sec = EB.sections[sIdx]; if (!sec) return;
+  const topic = document.getElementById('ebSingleQ-topic')?.value?.trim();
+  const notes = document.getElementById('ebSingleQ-notes')?.value?.trim() || '';
+  const subject = document.getElementById('eb-subject')?.value?.trim() || '';
+  const withImages = document.getElementById('ebSingleQ-withImages')?.checked || false;
+  const imgDesc = document.getElementById('ebSingleQ-imgDesc')?.value?.trim() || '';
+  document.getElementById('ebSingleQModal').style.display = 'none';
+  ebShowLoading('AI generating question...');
+  try {
+    const qs = await ebGenerateQuestionsAPI({ subject, topic:topic||subject, questionType:sec.type, difficulty:_ebModalDiff, count:1, notes });
+    if (qs.length) {
+      const q = qs[0];
+      const newQ = { id:ebGenId(), question:q.question, marks:q.marks||sec.marksPerQuestion||2, options:q.options||[], answer:q.answer||'', subParts:[], aiGenerated:true };
+      if (withImages && q.imageQuery) {
+        try { newQ.imageData = await ebFetchUnsplashImage(q.imageQuery, imgDesc); } catch(e) { console.warn('Image gen failed:', e); }
+      }
+      // Replace the specific question
+      if (qIdx !== undefined && sec.questions[qIdx]) {
+        sec.questions[qIdx] = newQ;
+      } else {
+        sec.questions.push(newQ);
+      }
+      ebRenderQuestionBuilder();
+      showToast('Question regenerated! <i class="fa-solid fa-robot"></i>', 'success');
+    }
+  } catch(err) { showToast('Failed: ' + err.message, 'error'); }
+  finally { ebHideLoading(); }
+}
+
+// ─── AI SVG Image Generation (replaces broken Unsplash source URL) ──────────
+async function ebFetchUnsplashImage(query, userDesc) {
+  // Generate an educational SVG illustration using AI
+  const desc = userDesc || query;
+  return await ebGenerateIllustrationAPI(desc);
+}
+
+async function ebGenerateIllustrationAPI(description) {
+  const system = `You are an expert SVG illustrator for educational exam papers.
+Create clean, labeled, educational SVG illustrations suitable for printing.
+OUTPUT RULES:
+- Output ONLY raw SVG code starting with <svg and ending with </svg>
+- No markdown, no prose, no code fences, no explanation
+- Use viewBox="0 0 420 260" width="420" height="260"  
+- Use clean colors: black (#111), dark gray (#444), medium gray (#888), light gray (#ddd), white (#fff)
+- You may use one or two accent colors (blue #2563eb, green #16a34a, red #dc2626, orange #ea580c) sparingly
+- Include clear text labels using <text> elements, font-family="Arial,sans-serif"
+- Make it look like a professional textbook diagram
+- For science: anatomical diagrams, lab apparatus, chemical structures, circuits
+- For geography: maps, cross-sections, climate charts  
+- For math: geometric shapes, number lines, graphs with axes
+- Always include a <title> describing what it shows`;
+  const prompt = `Create an educational SVG illustration for an exam question about: "${description}"
+Make it clear, labeled, and suitable for a printed exam paper.`;
+  const text = await ebCallClaude(prompt, system);
+  const svgMatch = text.match(/<svg[\s\S]*?<\/svg>/i);
+  if (!svgMatch) throw new Error('AI did not return a valid SVG illustration');
+  // Convert SVG to data URL for embedding
+  const svgBlob = new Blob([svgMatch[0]], {type:'image/svg+xml'});
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(svgBlob);
+  });
+}
+
 let _ebModalDiff = 'medium';
 function ebSetModalDiff(btn, diff) {
   _ebModalDiff = diff;
@@ -14680,15 +17225,30 @@ async function ebGenForSection() {
   const topic = document.getElementById('ebModal-topic')?.value?.trim();
   const notes = document.getElementById('ebModal-notes')?.value?.trim() || '';
   const subject = document.getElementById('eb-subject')?.value?.trim() || '';
+  const withImages = document.getElementById('ebModal-withImages')?.checked || false;
+  const imgDesc = document.getElementById('ebModal-imgDesc')?.value?.trim() || '';
+  const count = sec.questionCount || 5;
   document.getElementById('ebAISectionModal').style.display = 'none';
-  ebShowLoading('AI generating questions...');
-  try {
-    const qs = await ebGenerateQuestionsAPI({ subject, topic:topic||subject, questionType:sec.type, difficulty:_ebModalDiff, count:sec.questionCount||5, notes });
-    qs.forEach(q => sec.questions.push({ id:ebGenId(), question:q.question, marks:q.marks||sec.marksPerQuestion||2, options:q.options||[], answer:q.answer||'', subParts:q.subParts||[], aiGenerated:true }));
-    ebRenderQuestionBuilder();
-    showToast(`Generated ${qs.length} questions for Section ${sec.name}!`, 'success');
-  } catch(err) { showToast('Failed: ' + err.message, 'error'); }
-  finally { ebHideLoading(); }
+  let added = 0;
+  // Generate one question at a time so user sees progress live
+  for (let i = 0; i < count; i++) {
+    ebShowLoading(`Generating question ${i+1} of ${count}...`);
+    try {
+      const qs = await ebGenerateQuestionsAPI({ subject, topic:topic||subject, questionType:sec.type, difficulty:_ebModalDiff, count:1, notes });
+      if (qs.length) {
+        const q = qs[0];
+        const newQ = { id:ebGenId(), question:q.question, marks:q.marks||sec.marksPerQuestion||2, options:q.options||[], answer:q.answer||'', subParts:[], aiGenerated:true };
+        if (withImages && q.imageQuery) {
+          try { newQ.imageData = await ebFetchUnsplashImage(q.imageQuery, imgDesc); } catch(e) { console.warn('Image gen failed:', e); }
+        }
+        sec.questions.push(newQ);
+        added++;
+        ebRenderQuestionBuilder();
+      }
+    } catch(err) { showToast('Question '+(i+1)+' failed: ' + err.message, 'error'); break; }
+  }
+  ebHideLoading();
+  if (added) showToast(`Generated ${added} questions for Section ${sec.name}! <i class="fa-solid fa-check"></i>`, 'success');
 }
 
 // ─── Generate All Sections ────────────────────────────────────────────────────
@@ -14713,7 +17273,7 @@ async function ebDoGenAll() {
   try {
     await Promise.all(EB.sections.map((sec, sIdx) =>
       ebGenerateQuestionsAPI({ subject, topic:topics||subject, questionType:sec.type, difficulty:_ebGaDiff, count:sec.questionCount||5, notes })
-        .then(qs => { qs.forEach(q => { EB.sections[sIdx].questions.push({ id:ebGenId(), question:q.question, marks:q.marks||sec.marksPerQuestion||2, options:q.options||[], answer:q.answer||'', subParts:q.subParts||[], aiGenerated:true }); }); total+=qs.length; })
+        .then(qs => { qs.forEach(q => { EB.sections[sIdx].questions.push({ id:ebGenId(), question:q.question, marks:q.marks||sec.marksPerQuestion||2, options:q.options||[], answer:q.answer||'', subParts:[], aiGenerated:true }); }); total+=qs.length; })
         .catch(err => console.warn('Section', sec.name, err))
     ));
     ebRenderQuestionBuilder();
@@ -14795,21 +17355,91 @@ function ebOpenSubParts(sIdx, qIdx) {
   EB.subPartsSec = sIdx; EB.subPartsQ = qIdx;
   const q = EB.sections[sIdx]?.questions[qIdx];
   const list = document.getElementById('ebSubPartsList'); if (!list) return;
+  // Show main question preview
+  const mainQEl = document.getElementById('ebSubPartsMainQ');
+  const mainQText = document.getElementById('ebSubPartsMainQText');
+  if (mainQEl && mainQText && q?.question) {
+    mainQText.textContent = q.question;
+    mainQEl.style.display = '';
+  } else if (mainQEl) { mainQEl.style.display = 'none'; }
   list.innerHTML = (q?.subParts||[]).map((p,i) => `
     <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem">
+      <span style="font-size:.78rem;font-weight:700;min-width:1.2rem;color:var(--muted)">${String.fromCharCode(97+i)})</span>
       <input type="text" value="${ebEscape(p.text||'')}" placeholder="Sub-part text..." style="flex:1;padding:6px 10px;border:1.5px solid var(--border-lt);border-radius:6px;font-size:.82rem;outline:none" class="eb-sp-text"/>
       <input type="number" value="${p.marks||2}" min="1" max="20" style="width:58px;padding:6px 8px;border:1.5px solid var(--border-lt);border-radius:6px;font-size:.82rem;outline:none" class="eb-sp-marks"/>
-      <button onclick="this.closest('div').remove()" style="background:none;border:none;cursor:pointer;color:var(--danger)"><i class="fa-solid fa-xmark"></i></button>
+      <button onclick="this.closest('div').remove();ebReindexSubPartLabels()" style="background:none;border:none;cursor:pointer;color:var(--danger)"><i class="fa-solid fa-xmark"></i></button>
     </div>`).join('');
   document.getElementById('ebSubPartsModal').style.display = 'flex';
 }
+
+function ebReindexSubPartLabels() {
+  const items = document.querySelectorAll('#ebSubPartsList > div');
+  items.forEach((div, i) => {
+    const lbl = div.querySelector('span');
+    if (lbl) lbl.textContent = String.fromCharCode(97+i) + ')';
+  });
+}
+
+async function ebAiGenerateSubParts() {
+  const sIdx = EB.subPartsSec;
+  const qIdx = EB.subPartsQ;
+  const q = EB.sections[sIdx]?.questions[qIdx];
+  if (!q?.question?.trim()) { showToast('Main question has no text yet — type it first', 'error'); return; }
+  const count = parseInt(document.getElementById('ebSpAiCount')?.value) || 3;
+  const btn = document.getElementById('ebSpAiBtn');
+  const status = document.getElementById('ebSpAiStatus');
+  btn.disabled = true; btn.style.opacity = '.6';
+  if (status) status.style.display = '';
+  const sec = EB.sections[sIdx];
+  const subject = document.getElementById('eb-subject')?.value || 'General';
+  const system = `You are an expert exam question writer for Kenyan secondary school curriculum.
+OUTPUT RULES — CRITICAL:
+- Output ONLY a raw JSON object. No prose, no markdown, no code fences.
+- Start with { and end with }
+- Use exactly this structure: {"subParts":[{"text":"...","marks":2}]}
+- Each sub-part must directly relate to and break down the main question.
+- Sub-parts should be progressive: start simpler, build to harder.
+- Marks should reflect difficulty (1-6 per sub-part).
+- Do NOT repeat the main question in sub-parts.`;
+  const userPrompt = `Main question: "${q.question}"
+Subject: ${subject} | Section type: ${sec.type}
+Generate ${count} sub-parts (a, b, c…) that break this question into smaller parts.
+Return ONLY the JSON.`;
+  try {
+    const text = await ebCallClaude(userPrompt, system);
+    const parsed = ebExtractJSON(text);
+    const parts = parsed?.subParts || [];
+    if (!parts.length) throw new Error('No sub-parts returned');
+    // Append (don't replace) existing sub-parts
+    const existing = document.querySelectorAll('#ebSubPartsList > div').length;
+    const list = document.getElementById('ebSubPartsList');
+    parts.forEach((p, i) => {
+      const idx = existing + i;
+      const div = document.createElement('div');
+      div.style.cssText = 'display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem';
+      div.innerHTML = `<span style="font-size:.78rem;font-weight:700;min-width:1.2rem;color:var(--muted)">${String.fromCharCode(97+idx)})</span>
+        <input type="text" value="${ebEscape(p.text||'')}" placeholder="Sub-part text..." style="flex:1;padding:6px 10px;border:1.5px solid var(--border-lt);border-radius:6px;font-size:.82rem;outline:none" class="eb-sp-text"/>
+        <input type="number" value="${p.marks||2}" min="1" max="20" style="width:58px;padding:6px 8px;border:1.5px solid var(--border-lt);border-radius:6px;font-size:.82rem;outline:none" class="eb-sp-marks"/>
+        <button onclick="this.closest('div').remove();ebReindexSubPartLabels()" style="background:none;border:none;cursor:pointer;color:var(--danger)"><i class="fa-solid fa-xmark"></i></button>`;
+      list.appendChild(div);
+    });
+    showToast(`Generated ${parts.length} sub-parts <i class="fa-solid fa-check"></i>`, 'success');
+  } catch(err) {
+    showToast('AI sub-parts failed: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.style.opacity = '1';
+    if (status) status.style.display = 'none';
+  }
+}
 function ebAddSubPart() {
   const list = document.getElementById('ebSubPartsList');
+  const idx = list.querySelectorAll(':scope > div').length;
   const div = document.createElement('div');
   div.style.cssText = 'display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem';
-  div.innerHTML = `<input type="text" placeholder="Sub-part text..." style="flex:1;padding:6px 10px;border:1.5px solid var(--border-lt);border-radius:6px;font-size:.82rem;outline:none" class="eb-sp-text"/>
+  div.innerHTML = `<span style="font-size:.78rem;font-weight:700;min-width:1.2rem;color:var(--muted)">${String.fromCharCode(97+idx)})</span>
+    <input type="text" placeholder="Sub-part text..." style="flex:1;padding:6px 10px;border:1.5px solid var(--border-lt);border-radius:6px;font-size:.82rem;outline:none" class="eb-sp-text"/>
     <input type="number" value="2" min="1" max="20" style="width:58px;padding:6px 8px;border:1.5px solid var(--border-lt);border-radius:6px;font-size:.82rem;outline:none" class="eb-sp-marks"/>
-    <button onclick="this.closest('div').remove()" style="background:none;border:none;cursor:pointer;color:var(--danger)"><i class="fa-solid fa-xmark"></i></button>`;
+    <button onclick="this.closest('div').remove();ebReindexSubPartLabels()" style="background:none;border:none;cursor:pointer;color:var(--danger)"><i class="fa-solid fa-xmark"></i></button>`;
   list.appendChild(div);
 }
 function ebSaveSubParts() {
@@ -14874,6 +17504,8 @@ function ebSaveApiKey() {
   if (!key) { showToast('Please enter an API key', 'error'); return; }
   settings.ebApiKey = key;
   save(K.settings, [settings]);
+  // Also save to platform-global key so it persists across school contexts
+  localStorage.setItem('ei_platform_api_key', key);
   showToast('API key saved! <i class="fa-solid fa-circle-check"></i>', 'success');
   document.getElementById('ebApiKeyStatus').textContent = '';
 }
@@ -14881,29 +17513,15 @@ function ebSaveApiKey() {
 async function ebTestApiKey() {
   const statusEl = document.getElementById('ebApiKeyStatus');
   statusEl.textContent = '⏳ Testing...';
-  // Test proxy first
+  const key = document.getElementById('ebApiKeyInput')?.value?.trim() || ebGetApiKey();
+  if (!key) { statusEl.innerHTML = '<span style="color:var(--danger)"><i class="fa-solid fa-circle-xmark"></i> Please enter a Groq API key</span>'; return; }
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 10, messages: [{ role: 'user', content: 'Hi' }] })
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      body: JSON.stringify({ model: 'llama-3.3-70b-versatile', max_tokens: 5, messages: [{ role: 'user', content: 'Hi' }] })
     });
-    if (res.ok) {
-      statusEl.innerHTML = '<span style="color:#10b981;font-weight:700"><i class="fa-solid fa-circle-check"></i> AI Connected (built-in)!</span>';
-      showToast('AI is ready — no API key needed here!', 'success');
-      return;
-    }
-  } catch(e) {}
-  // Try user key
-  const key = document.getElementById('ebApiKeyInput')?.value?.trim();
-  if (!key) { statusEl.innerHTML = '<span style="color:var(--danger)"><i class="fa-solid fa-circle-xmark"></i> No key & proxy unavailable</span>'; return; }
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 10, messages: [{ role: 'user', content: 'Hello' }] })
-    });
-    if (res.ok) { statusEl.innerHTML = '<span style="color:#10b981;font-weight:700"><i class="fa-solid fa-circle-check"></i> API Key Connected!</span>'; showToast('API key works! AI ready.', 'success'); }
+    if (res.ok) { statusEl.innerHTML = '<span style="color:#10b981;font-weight:700"><i class="fa-solid fa-circle-check"></i> Groq API Key Connected!</span>'; showToast('Groq API key works! AI ready.', 'success'); }
     else { const e = await res.json().catch(() => ({})); statusEl.innerHTML = `<span style="color:var(--danger)"><i class="fa-solid fa-circle-xmark"></i> ${e.error?.message || 'Invalid key'}</span>`; }
   } catch(err) { statusEl.innerHTML = `<span style="color:var(--danger)"><i class="fa-solid fa-circle-xmark"></i> ${err.message}</span>`; }
 }
@@ -14927,10 +17545,14 @@ function es_syncFromCharanas() {
   const chTeachers  = load(K.teachers);   // [{id, name, subjects[], …}]
   const chSubjects  = load(K.subjects);   // [{id, name, teacherId, …}]
 
-  /* Read stream-subject-teacher assignments from the dedicated key */
-  const kSA = schoolPrefix() + 'ei_streamassign';
-  let chSA  = [];
-  try { chSA = JSON.parse(localStorage.getItem(kSA)) || []; } catch {}
+  /* Read stream-subject-teacher assignments from the dedicated key.
+     The main system saves to 'ei_streamassign' (no school prefix) while
+     older builds saved with schoolPrefix(). Try both so neither is missed. */
+  let chSA = [];
+  try { chSA = JSON.parse(localStorage.getItem(schoolPrefix() + 'ei_streamassign')) || []; } catch {}
+  if (!chSA.length) {
+    try { chSA = JSON.parse(localStorage.getItem('ei_streamassign')) || []; } catch {}
+  }
 
   if (chClasses.length === 0 && chStreams.length === 0 && chTeachers.length === 0) {
     es_toast('No school data found. Add classes, teachers & subjects first.', 'warning');
@@ -16607,6 +19229,25 @@ const RBAC_SCHEMA = {
           { key: 'tabFeeReceipts',   label: 'Receipts',         defaultOn: true  },
         ]
       },
+      {
+        key: 'staffdetails', label: 'Staff Details', icon: 'fa-id-card', defaultOn: false,
+        tabs: [
+          { key: 'sdpList',    label: 'Directory',   defaultOn: true  },
+          { key: 'sdpAddEdit', label: 'Add / Edit',  defaultOn: false },
+          { key: 'sdpLeave',   label: 'Leave',       defaultOn: false },
+          { key: 'sdpDocs',    label: 'Documents',   defaultOn: false },
+          { key: 'sdpRoles',   label: 'Roles',       defaultOn: false },
+          { key: 'sdpSalary',  label: 'Salary',      defaultOn: false },
+        ]
+      },
+      {
+        key: 'salaries', label: 'Finance → Salaries', icon: 'fa-money-bill-wave', defaultOn: false,
+        tabs: [
+          { key: 'tabStaffSalary', label: 'Staff Salary', defaultOn: false },
+          { key: 'tabPayroll',     label: 'Payroll',      defaultOn: false },
+          { key: 'tabPayslips',    label: 'Payslips',     defaultOn: false },
+        ]
+      },
       { key: 'messaging',    label: 'Messaging',            icon: 'fa-comments',        defaultOn: false },
       { key: 'settings',     label: 'Settings',             icon: 'fa-sliders',         defaultOn: true  },
     ],
@@ -16925,12 +19566,36 @@ function applyRbacTeacher() {
   const cfg = rbacEffective('teacher', currentSchoolId);
 
   // Sections — hide/show nav links
-  const teacherSections = ['dashboard','exambuilder','exams','papers','fees','messaging','settings'];
+  const teacherSections = ['dashboard','exambuilder','exams','papers','fees','staffdetails','messaging','settings'];
   teacherSections.forEach(sec => {
     const allowed = cfg[sec] !== false;
     document.querySelectorAll(`[data-s="${sec}"]`).forEach(el => {
       // Only restrict if already visible (don't fight platform nav config)
       if (!allowed) el.style.display = 'none';
+    });
+  });
+
+  // Staff Details sub-tabs
+  ['sdpList','sdpAddEdit','sdpLeave','sdpDocs','sdpRoles','sdpSalary'].forEach(tabId => {
+    const key = 'staffdetails__' + tabId;
+    const allowed = cfg[key] !== false;
+    document.querySelectorAll(`[onclick*="${tabId}"]`).forEach(btn => {
+      if (!allowed) btn.style.display = 'none';
+    });
+  });
+
+  // Finance → Salaries main tab button
+  if (cfg['salaries'] === false) {
+    const salBtn = document.getElementById('fmtSalaries');
+    if (salBtn) salBtn.style.display = 'none';
+  }
+
+  // Salaries sub-tabs (only relevant when salaries section is allowed)
+  ['tabStaffSalary','tabPayroll','tabPayslips'].forEach(tabId => {
+    const key = 'salaries__' + tabId;
+    const allowed = cfg[key] !== false;
+    document.querySelectorAll(`[onclick*="${tabId}"]`).forEach(btn => {
+      if (!allowed) btn.style.display = 'none';
     });
   });
 
@@ -17075,9 +19740,6 @@ if (_origOpenPlatTab) {
         rbacSwitchMode('global');
         rbacSelectRole('teacher', document.getElementById('rbacRoleTab-teacher'));
       }, 0);
-    }
-    if (tabId === 'platTab-staffroles') {
-      platInitStaffRolesTab();
     }
     if (tabId === 'platTab-hrpayroll') {
       platInitHRPayroll();
@@ -17661,7 +20323,8 @@ function previewPayslip() {
   let history = JSON.parse(localStorage.getItem('charanas_payslipHistory') || '[]');
   const existing = history.find(h => h.staffId === staffId && h.month === month && h.year === year);
   if (!existing) {
-    history.push({ id: 'ps_' + Date.now(), staffId, name: rec.name, role: rec.role || '', month, year, net: rec.net });
+    history.push({ id: 'ps_' + Date.now(), staffId, name: rec.name, role: rec.role || '', month, year, net: rec.net,
+      basic: rec.basic, allow: rec.allow, nhif: rec.nhif, nssf: rec.nssf, deduct: rec.deduct, type: rec.type || '' });
     localStorage.setItem('charanas_payslipHistory', JSON.stringify(history));
     renderPayslipHistory();
   }
@@ -17700,7 +20363,8 @@ function renderPayslipHistory() {
       <td style="font-weight:700;color:var(--primary)">KES ${Number(h.net).toLocaleString()}</td>
       <td>
         <button class="btn btn-outline btn-xs" onclick="reloadPayslip('${h.staffId}','${h.month}','${h.year}')"><i class="fa-solid fa-eye"></i> View</button>
-        <button class="btn btn-danger btn-xs" onclick="deletePayslipHistory('${h.id}')"><i class="fa-solid fa-trash"></i></button>
+        <button class="btn btn-outline btn-xs" style="border-color:#7c3aed;color:#7c3aed;margin-left:.3rem" onclick="reloadAndPrintPayslip('${h.staffId}','${h.month}','${h.year}')"><i class="fa-solid fa-print"></i> Print</button>
+        <button class="btn btn-danger btn-xs" style="margin-left:.3rem" onclick="deletePayslipHistory('${h.id}')"><i class="fa-solid fa-trash"></i></button>
       </td>
     </tr>`).join('');
 }
@@ -17716,12 +20380,51 @@ function reloadPayslip(staffId, month, year) {
   previewPayslip();
 }
 
+function reloadAndPrintPayslip(staffId, month, year) {
+  // Build and print the payslip PDF directly using the shared _sppBuildPDF builder
+  const salaries = loadStaffSalaries();
+  const rec = salaries.find(r => r.staffId === staffId);
+  const pHistory = JSON.parse(localStorage.getItem('charanas_payslipHistory') || '[]');
+  const ph = pHistory.find(h => h.staffId === staffId && h.month === month && h.year === String(year) && h.basic != null);
+  const school = localStorage.getItem('charanas_schoolName') || (typeof settings !== 'undefined' && settings.schoolName) || 'School';
+  let pay = null;
+  if (rec) {
+    pay = { name: rec.name, role: rec.role || '—', type: rec.type || '—', staffId,
+            basic: Number(rec.basic||0), allow: Number(rec.allow||0), nhif: Number(rec.nhif||0),
+            nssf: Number(rec.nssf||0), deduct: Number(rec.deduct||0), net: Number(rec.net||0),
+            status: '', source: 'salary' };
+  } else if (ph) {
+    pay = { name: ph.name, role: ph.role || '—', type: ph.type || '—', staffId,
+            basic: Number(ph.basic||0), allow: Number(ph.allow||0), nhif: Number(ph.nhif||0),
+            nssf: Number(ph.nssf||0), deduct: Number(ph.deduct||0), net: Number(ph.net||0),
+            status: '', source: 'salary' };
+  }
+  if (!pay) { alert('Salary record not found for this staff member. Please preview first.'); reloadPayslip(staffId, month, year); return; }
+  // Temporarily set currentUser so _sppBuildPDF can use staffId/dept
+  const prevUser = typeof currentUser !== 'undefined' ? currentUser : null;
+  if (!window.currentUser) window.currentUser = {};
+  const savedId = window.currentUser.staffId; const savedDept = window.currentUser.dept;
+  window.currentUser.staffId = staffId;
+  window.currentUser.dept = (rec && rec.dept) || '—';
+  try {
+    const doc = _sppBuildPDF(month, year, pay, school);
+    const blobUrl = doc.output('bloburl');
+    const win = window.open(blobUrl, '_blank');
+    if (win) win.onload = () => { try { win.print(); } catch(e){} };
+    else { alert('Allow pop-ups to print, or use the View button and print from there.'); }
+  } finally {
+    window.currentUser.staffId = savedId;
+    window.currentUser.dept = savedDept;
+  }
+}
+
 function deletePayslipHistory(id) {
   if (!confirm('Remove this payslip from history?')) return;
   let history = JSON.parse(localStorage.getItem('charanas_payslipHistory') || '[]');
   history = history.filter(h => h.id !== id);
   localStorage.setItem('charanas_payslipHistory', JSON.stringify(history));
   renderPayslipHistory();
+}
 
 // ══════════════════════════════════════════════════════════════════
 // STAFF DETAILS — shared data layer (used by sidebar + platform admin)
@@ -17848,6 +20551,10 @@ function pstRenderList() {
   body.innerHTML = filtered.map((s,i) => {
     const sc = statusColour[s.status] || '#6b7280';
     const statusBadge = s.status ? `<span class="badge" style="background:${sc};color:#fff;font-size:.7rem">${s.status}</span>` : '—';
+    const hasPortalAccess = !!(s.staffId && s.natId);
+    const portalBadge = hasPortalAccess
+      ? `<span class="badge" style="background:#dcfce7;color:#15803d;font-size:.7rem"><i class="fa-solid fa-circle-check"></i> Ready</span>`
+      : `<span class="badge" style="background:#fef9c3;color:#a16207;font-size:.7rem" title="Add National ID to enable portal login"><i class="fa-solid fa-triangle-exclamation"></i> Missing NatID</span>`;
     return `
     <tr>
       <td>${i+1}</td>
@@ -17858,6 +20565,7 @@ function pstRenderList() {
       <td>${s.email || '—'}</td>
       <td>${s.staffId || '—'}</td>
       <td>${statusBadge}</td>
+      <td>${portalBadge}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-outline btn-xs" onclick="pstEditStaff('${s.id}')"><i class="fa-solid fa-pen"></i></button>
         <button class="btn btn-danger btn-xs" onclick="pstDeleteStaff('${s.id}')"><i class="fa-solid fa-trash"></i></button>
@@ -17907,7 +20615,6 @@ function pstSaveStaff() {
 
     saveStaffDetailsStorage(data);
     populateStaffDropdowns();
-    platRenderStaffList();
     if (typeof sdpRenderList === 'function') sdpRenderList();
     pstClearForm();
     pstPopulateDeptFilter();
@@ -17959,7 +20666,6 @@ function pstDeleteStaff(id) {
   let data = loadStaffDetails().filter(s => s.id !== id);
   saveStaffDetailsStorage(data);
   populateStaffDropdowns();
-  platRenderStaffList();
   if (typeof sdpRenderList === 'function') sdpRenderList();
   pstPopulateDeptFilter();
   pstRenderList();
@@ -18179,22 +20885,29 @@ function sdpRenderList() {
   if (status) data = data.filter(r => r.status === status);
   sdpRenderStats();
   if (!data.length) {
-    body.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--muted);padding:2rem">No staff records found. Click <strong>Add Staff</strong> to get started.</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:2rem">No staff records found. Click <strong>Add Staff</strong> to get started.</td></tr>';
     return;
   }
   const sc = { Active:'#16a34a','On Leave':'#f59e0b',Resigned:'#ef4444',Retired:'#6b7280' };
-  body.innerHTML = data.map((r,i) => `
+  body.innerHTML = data.map((r,i) => {
+    const hasPortal = !!(r.staffId && r.natId);
+    const portalBadge = hasPortal
+      ? `<span class="badge" style="background:#dcfce7;color:#15803d;font-size:.7rem"><i class="fa-solid fa-circle-check"></i> Ready</span>`
+      : `<span class="badge" style="background:#fef9c3;color:#a16207;font-size:.7rem" title="Add National ID to enable portal login"><i class="fa-solid fa-triangle-exclamation"></i> No NatID</span>`;
+    return `
     <tr>
       <td>${i+1}</td><td><strong>${r.name}</strong></td>
       <td>${r.role||'—'}</td><td>${r.dept ? `<span class="badge">${r.dept}</span>` : '—'}</td>
       <td>${r.phone||'—'}</td><td>${r.email||'—'}</td>
       <td><span class="badge" style="background:${sc[r.status]||'#6b7280'};color:#fff">${r.status||'Active'}</span></td>
       <td>${r.joinDate||'—'}</td>
+      <td>${portalBadge}</td>
       <td>
         <button class="btn btn-outline btn-xs" onclick="sdpEditStaff('${r.id}')"><i class="fa-solid fa-pen"></i></button>
         <button class="btn btn-danger btn-xs"  onclick="sdpDeleteStaff('${r.id}')"><i class="fa-solid fa-trash"></i></button>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 function sdpSaveStaff() {
@@ -18228,7 +20941,6 @@ function sdpSaveStaff() {
   sdpRenderList();
   sdpPopulateDropdowns();
   populateStaffDropdowns();      // keep Finances salary dropdowns in sync
-  platRenderStaffList();         // keep Platform Admin table in sync
   pstPopulateDeptFilter(); pstRenderList(); // keep People list in sync
   openSDTab('sdpList', document.getElementById('sdpbtList'));
   showToast('Staff record saved.');
@@ -18273,11 +20985,10 @@ function sdpDeleteStaff(id) {
   if (!confirm('Delete this staff record? This cannot be undone.')) return;
   let data = loadStaffDetails().filter(r => r.id !== id);
   saveStaffDetailsStorage(data);
-  sdpRenderList(); sdpPopulateDropdowns(); populateStaffDropdowns(); platRenderStaffList();
+  sdpRenderList(); sdpPopulateDropdowns(); populateStaffDropdowns();
   pstPopulateDeptFilter(); pstRenderList(); // keep People list in sync
   showToast('Staff record deleted.');
 }
-
 
 
 // ══════════════════════════════════════════════════════════════════
@@ -18302,31 +21013,25 @@ function sdpPopulateSalaryStaffDropdown() {
 }
 
 function sdpSalOnStaffChange() {
-  const sel  = document.getElementById('sdpSalStaff');
-  const staffId = sel?.value || '';
+  const sel = document.getElementById('sdpSalStaff');
+  const staffId = sel ? sel.value : '';
   const roleEl  = document.getElementById('sdpSalRole');
-
-  // Auto-fill role from staff profile
   if (staffId && roleEl) {
     const s = loadStaffDetails().find(x => x.id === staffId);
     if (s && s.role) roleEl.value = s.role;
   }
-
-  // If this staff already has a saved salary record, pre-fill the form
   const existing = loadStaffSalaries().find(r => r.staffId === staffId);
   if (existing) {
     sdpFillSalaryForm(existing);
     const t = document.getElementById('sdpSalaryFormTitle');
     if (t) t.innerHTML = '<i class="fa-solid fa-pen"></i> Update Salary Record';
   } else {
-    // Clear numeric fields but keep the role we just set
-    ['sdpSalBasic','sdpSalAllow','sdpSalDeduct','sdpSalNHIF','sdpSalNSSF','sdpSalNet','sdpSalNotes'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el && id !== 'sdpSalRole') el.value = id.endsWith('Net') ? '' : (id.endsWith('Notes') ? '' : '0');
+    ['sdpSalBasic','sdpSalNet','sdpSalNotes'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
     });
-    document.getElementById('sdpSalBasic').value = '';
-    document.getElementById('sdpSalNet').value = '';
-    document.getElementById('sdpSalNotes').value = '';
+    ['sdpSalAllow','sdpSalDeduct','sdpSalNHIF','sdpSalNSSF'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '0';
+    });
     document.getElementById('sdpSalaryEditId').value = '';
     const t = document.getElementById('sdpSalaryFormTitle');
     if (t) t.innerHTML = '<i class="fa-solid fa-money-bill-wave"></i> Set / Update Staff Salary';
@@ -18337,35 +21042,31 @@ function sdpFillSalaryForm(r) {
   document.getElementById('sdpSalaryEditId').value = r.id || '';
   const sel = document.getElementById('sdpSalStaff');
   if (sel) sel.value = r.staffId || '';
-  document.getElementById('sdpSalRole').value    = r.role    || '';
-  document.getElementById('sdpSalBasic').value   = r.basic   || '';
-  document.getElementById('sdpSalAllow').value   = r.allow   || 0;
-  document.getElementById('sdpSalDeduct').value  = r.deduct  || 0;
-  document.getElementById('sdpSalNHIF').value    = r.nhif    || 0;
-  document.getElementById('sdpSalNSSF').value    = r.nssf    || 0;
-  document.getElementById('sdpSalNet').value     = r.net     || '';
-  document.getElementById('sdpSalNotes').value   = r.notes   || '';
+  document.getElementById('sdpSalRole').value   = r.role   || '';
+  document.getElementById('sdpSalBasic').value  = r.basic  || '';
+  document.getElementById('sdpSalAllow').value  = r.allow  || 0;
+  document.getElementById('sdpSalDeduct').value = r.deduct || 0;
+  document.getElementById('sdpSalNHIF').value   = r.nhif   || 0;
+  document.getElementById('sdpSalNSSF').value   = r.nssf   || 0;
+  document.getElementById('sdpSalNet').value    = r.net    || '';
+  document.getElementById('sdpSalNotes').value  = r.notes  || '';
   const typeEl = document.getElementById('sdpSalType');
   if (typeEl && r.type) typeEl.value = r.type;
 }
 
 function sdpCalcNetSalary() {
-  const basic  = parseFloat(document.getElementById('sdpSalBasic')?.value)  || 0;
-  const allow  = parseFloat(document.getElementById('sdpSalAllow')?.value)  || 0;
-  const deduct = parseFloat(document.getElementById('sdpSalDeduct')?.value) || 0;
-  const nhif   = parseFloat(document.getElementById('sdpSalNHIF')?.value)   || 0;
-  const nssf   = parseFloat(document.getElementById('sdpSalNSSF')?.value)   || 0;
-  const net    = basic + allow - deduct - nhif - nssf;
-  const netEl  = document.getElementById('sdpSalNet');
-  if (netEl) netEl.value = net.toFixed(2);
+  const v = id => parseFloat(document.getElementById(id)?.value) || 0;
+  const net = v('sdpSalBasic') + v('sdpSalAllow') - v('sdpSalDeduct') - v('sdpSalNHIF') - v('sdpSalNSSF');
+  const el = document.getElementById('sdpSalNet');
+  if (el) el.value = net.toFixed(2);
 }
 
 function sdpSaveStaffSalary() {
   const sel = document.getElementById('sdpSalStaff');
-  const staffId = sel?.value || '';
-  const name    = sel?.options[sel.selectedIndex]?.text.split(' (')[0] || '';
-  const role    = (document.getElementById('sdpSalRole')?.value  || '').trim();
-  const type    = document.getElementById('sdpSalType')?.value   || 'Monthly';
+  const staffId = sel ? sel.value : '';
+  const name    = sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text.split(' (')[0] : '';
+  const role    = (document.getElementById('sdpSalRole')?.value   || '').trim();
+  const type    = document.getElementById('sdpSalType')?.value    || 'Monthly';
   const basic   = parseFloat(document.getElementById('sdpSalBasic')?.value)  || 0;
   const allow   = parseFloat(document.getElementById('sdpSalAllow')?.value)  || 0;
   const deduct  = parseFloat(document.getElementById('sdpSalDeduct')?.value) || 0;
@@ -18373,24 +21074,17 @@ function sdpSaveStaffSalary() {
   const nssf    = parseFloat(document.getElementById('sdpSalNSSF')?.value)   || 0;
   const net     = basic + allow - deduct - nhif - nssf;
   const notes   = (document.getElementById('sdpSalNotes')?.value || '').trim();
-
   if (!staffId) { alert('Please select a staff member.'); return; }
   if (!basic)   { alert('Please enter a basic salary amount.'); return; }
-
-  let data    = loadStaffSalaries();
-  const editId = document.getElementById('sdpSalaryEditId')?.value;
-
-  // Also check if this staffId already has a record (upsert by staffId)
-  const byStaffIdx = data.findIndex(r => r.staffId === staffId);
-
-  const record = { name, staffId, role, type, basic, allow, deduct, nhif, nssf, net, notes };
-
+  let data = loadStaffSalaries();
+  const editId      = document.getElementById('sdpSalaryEditId')?.value;
+  const byStaffIdx  = data.findIndex(r => r.staffId === staffId);
+  const record      = { name, staffId, role, type, basic, allow, deduct, nhif, nssf, net, notes };
   if (editId) {
     const idx = data.findIndex(r => r.id === editId);
-    if (idx > -1) { data[idx] = { ...data[idx], ...record }; }
-    else { data.push({ id: editId, ...record }); }
+    if (idx > -1) data[idx] = { ...data[idx], ...record };
+    else data.push({ id: editId, ...record });
   } else if (byStaffIdx > -1) {
-    // Update existing record for this staff member
     data[byStaffIdx] = { ...data[byStaffIdx], ...record };
     document.getElementById('sdpSalaryEditId').value = data[byStaffIdx].id;
   } else {
@@ -18398,24 +21092,18 @@ function sdpSaveStaffSalary() {
     data.push(newRec);
     document.getElementById('sdpSalaryEditId').value = newRec.id;
   }
-
   saveStaffSalariesToStorage(data);
-
-  // Refresh both this table and the Finances salary table if visible
   sdpRenderSalaryTable();
-  renderStaffSalaryTable();   // keeps Finances → Staff Salary in sync
-
+  renderStaffSalaryTable();
   const t = document.getElementById('sdpSalaryFormTitle');
   if (t) t.innerHTML = '<i class="fa-solid fa-pen"></i> Update Salary Record';
-
   showToast('Salary saved and reflected in Finances <i class="fa-solid fa-check"></i>', 'success');
 }
 
 function sdpClearSalaryForm() {
   document.getElementById('sdpSalaryEditId').value = '';
   ['sdpSalStaff','sdpSalType'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.selectedIndex = 0;
+    const el = document.getElementById(id); if (el) el.selectedIndex = 0;
   });
   ['sdpSalRole','sdpSalBasic','sdpSalNotes','sdpSalNet'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
@@ -18461,15 +21149,14 @@ function sdpEditSalaryRecord(id) {
   sdpFillSalaryForm(r);
   const t = document.getElementById('sdpSalaryFormTitle');
   if (t) t.innerHTML = '<i class="fa-solid fa-pen"></i> Edit Salary Record';
-  window.scrollTo({ top: document.getElementById('sdpSalary')?.offsetTop || 0, behavior: 'smooth' });
 }
 
 function sdpDeleteSalaryRecord(id) {
   if (!confirm('Delete this salary record? It will also be removed from Finances.')) return;
-  let data = loadStaffSalaries().filter(r => r.id !== id);
+  const data = loadStaffSalaries().filter(r => r.id !== id);
   saveStaffSalariesToStorage(data);
   sdpRenderSalaryTable();
-  renderStaffSalaryTable();  // sync Finances table
+  renderStaffSalaryTable();
   showToast('Salary record deleted.');
 }
 
@@ -18492,7 +21179,7 @@ function sdpSaveRole() {
   let roles = JSON.parse(localStorage.getItem('charanas_staffRoles')||'[]');
   roles.push({ id:'sr_'+Date.now(), name, dept, desc });
   localStorage.setItem('charanas_staffRoles', JSON.stringify(roles));
-  sdpRenderRolesList(); platRenderRolesList();
+  sdpRenderRolesList();
   document.getElementById('sdprName').value = '';
   document.getElementById('sdprDesc').value = '';
   showToast('Role saved.');
@@ -18512,7 +21199,7 @@ function sdpDeleteRole(id) {
   if (!confirm('Delete this role?')) return;
   let roles = JSON.parse(localStorage.getItem('charanas_staffRoles')||'[]').filter(r=>r.id!==id);
   localStorage.setItem('charanas_staffRoles', JSON.stringify(roles));
-  sdpRenderRolesList(); platRenderRolesList();
+  sdpRenderRolesList();
 }
 
 // Documents
@@ -18535,7 +21222,7 @@ function sdpHandleDocUpload(input) {
   let docs = JSON.parse(localStorage.getItem(staffDocsKey())||'[]');
   docs.push({ id:'doc_'+Date.now(), staff:staffName, type, filename:file.name, size:(file.size/1024).toFixed(1)+' KB', uploaded:new Date().toLocaleDateString() });
   localStorage.setItem(staffDocsKey(), JSON.stringify(docs));
-  sdpRenderDocsList(); platRenderDocsList();
+  sdpRenderDocsList();
   input.value = ''; showToast(`Document "${file.name}" recorded.`);
 }
 
@@ -18552,7 +21239,7 @@ function sdpDeleteDoc(id) {
   if (!confirm('Remove this document record?')) return;
   let docs = JSON.parse(localStorage.getItem(staffDocsKey())||'[]').filter(d=>d.id!==id);
   localStorage.setItem(staffDocsKey(), JSON.stringify(docs));
-  sdpRenderDocsList(); platRenderDocsList();
+  sdpRenderDocsList();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -18684,206 +21371,11 @@ function sdpRenderLeaveList() {
     </tr>`).join('')}</tbody></table></div>`;
 }
 
-// ── Platform Admin → Staff Roles tab ────────────────────────────
+// ── Staff Details: school-side only (see s-staffdetails section) ─
 
-function openPlatStaffTab(tabId, btn) {
-  document.querySelectorAll('#platTab-staffroles .tab-panel').forEach(p => { p.style.display='none'; p.classList.remove('active'); });
-  document.querySelectorAll('#platStaffTabBar .tb').forEach(b => b.classList.remove('active'));
-  const panel = document.getElementById(tabId);
-  if (panel) { panel.style.display=''; panel.classList.add('active'); }
-  if (btn) btn.classList.add('active');
-}
 
-function platInitStaffRolesTab() {
-  platRenderStaffStats();
-  platRenderStaffList();
-  platPopulateDocDropdown();
-  platRenderRolesList();
-  platRenderDocsList();
-}
 
-function platRenderStaffStats() {
-  const all = loadStaffDetails();
-  const el = document.getElementById('platStaffStats'); if (!el) return;
-  const depts = [...new Set(all.map(r=>r.dept))];
-  el.innerHTML = `
-    <div class="fee-stat-card"><div class="fsc-label">Total Staff</div><div class="fsc-val">${all.length}</div></div>
-    <div class="fee-stat-card"><div class="fsc-label">Active</div><div class="fsc-val" style="color:#16a34a">${all.filter(r=>r.status==='Active').length}</div></div>
-    <div class="fee-stat-card"><div class="fsc-label">On Leave</div><div class="fsc-val" style="color:#f59e0b">${all.filter(r=>r.status==='On Leave').length}</div></div>
-    <div class="fee-stat-card"><div class="fsc-label">Departments</div><div class="fsc-val">${depts.length}</div></div>`;
-}
 
-function platFilterStaff() { platRenderStaffList(); }
-
-function platRenderStaffList() {
-  const body = document.getElementById('platStaffBody'); if (!body) return;
-  let data = loadStaffDetails();
-  const search = (document.getElementById('psdSearch')?.value||'').toLowerCase();
-  const dept   = document.getElementById('psdFilterDept')?.value||'';
-  const status = document.getElementById('psdFilterStatus')?.value||'';
-  if (search) data = data.filter(r=>(r.name+r.role+r.staffId).toLowerCase().includes(search));
-  if (dept)   data = data.filter(r=>r.dept===dept);
-  if (status) data = data.filter(r=>r.status===status);
-  platRenderStaffStats();
-  if (!data.length) {
-    body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:2rem">No staff records found. Click <strong>Add Staff</strong> to get started.</td></tr>';
-    return;
-  }
-  const sc = { Active:'#16a34a','On Leave':'#f59e0b',Resigned:'#ef4444',Retired:'#6b7280' };
-  body.innerHTML = data.map((r,i)=>`
-    <tr>
-      <td>${i+1}</td><td>${r.staffId||'—'}</td><td><strong>${r.name}</strong></td>
-      <td>${r.role}</td><td><span class="badge">${r.dept}</span></td>
-      <td>${r.phone}</td><td>${r.email||'—'}</td><td>${r.empType}</td>
-      <td>${r.joinDate||'—'}</td>
-      <td><span class="badge" style="background:${sc[r.status]||'#6b7280'};color:#fff">${r.status}</span></td>
-      <td>
-        <button class="btn btn-outline btn-xs" onclick="platEditStaff('${r.id}')"><i class="fa-solid fa-pen"></i></button>
-        <button class="btn btn-danger btn-xs"  onclick="platDeleteStaff('${r.id}')"><i class="fa-solid fa-trash"></i></button>
-      </td>
-    </tr>`).join('');
-}
-
-function platSaveStaff() {
-  const g = id => (document.getElementById(id)?.value||'').trim();
-  const name = g('psdName'), phone = g('psdPhone'), role = g('psdRole');
-  const dept = document.getElementById('psdDept')?.value||'';
-  if (!name)  { alert('Full name is required.'); return; }
-  if (!phone) { alert('Phone number is required.'); return; }
-  if (!role)  { alert('Role / Position is required.'); return; }
-  if (!dept)  { alert('Department is required.'); return; }
-  const rec = {
-    name, staffId:g('psdStaffId'), natId:g('psdNatId'),
-    gender:document.getElementById('psdGender')?.value||'',
-    dob:g('psdDOB'), phone, email:g('psdEmail'), address:g('psdAddress'),
-    role, dept, empType:document.getElementById('psdEmpType')?.value||'Permanent',
-    joinDate:g('psdJoinDate'), contractEnd:g('psdContractEnd'),
-    status:document.getElementById('psdStatus')?.value||'Active',
-    qual:g('psdQual'), subjects:g('psdSubjects'),
-    ecName:g('psdECName'), ecPhone:g('psdECPhone'), notes:g('psdNotes')
-  };
-  let data = loadStaffDetails();
-  const editId = document.getElementById('psdEditId')?.value;
-  if (editId) {
-    const idx = data.findIndex(r=>r.id===editId);
-    if (idx>-1) data[idx] = { ...data[idx], ...rec };
-  } else {
-    data.push({ id:'sd_'+Date.now(), ...rec });
-  }
-  saveStaffDetailsStorage(data);
-  platClearStaffForm();
-  platRenderStaffList();
-  platPopulateDocDropdown();
-  sdpRenderList();              // keep sidebar in sync
-  sdpPopulateDropdowns();
-  populateStaffDropdowns();     // keep Finances salary dropdowns in sync
-  openPlatStaffTab('pstList', document.getElementById('pstbList'));
-  showToast('Staff record saved.');
-}
-
-function platClearStaffForm() {
-  ['psdEditId','psdName','psdStaffId','psdNatId','psdDOB','psdPhone','psdEmail',
-   'psdAddress','psdRole','psdJoinDate','psdContractEnd','psdQual','psdSubjects','psdECName','psdECPhone','psdNotes']
-    .forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
-  ['psdGender','psdDept','psdEmpType','psdStatus'].forEach(id => {
-    const el=document.getElementById(id); if(el) el.selectedIndex=0;
-  });
-  const t=document.getElementById('pstFormTitle');
-  if(t) t.innerHTML='<i class="fa-solid fa-plus"></i> Add New Staff Member';
-}
-
-function platEditStaff(id) {
-  const r = loadStaffDetails().find(x=>x.id===id); if(!r) return;
-  const map = { psdEditId:id, psdName:r.name, psdStaffId:r.staffId, psdNatId:r.natId,
-    psdDOB:r.dob, psdPhone:r.phone, psdEmail:r.email, psdAddress:r.address,
-    psdRole:r.role, psdJoinDate:r.joinDate, psdContractEnd:r.contractEnd,
-    psdQual:r.qual, psdSubjects:r.subjects, psdECName:r.ecName, psdECPhone:r.ecPhone, psdNotes:r.notes };
-  Object.entries(map).forEach(([k,v])=>{ const el=document.getElementById(k); if(el) el.value=v||''; });
-  ['psdGender','psdDept','psdEmpType','psdStatus'].forEach(fid=>{
-    const el=document.getElementById(fid);
-    const key={psdGender:'gender',psdDept:'dept',psdEmpType:'empType',psdStatus:'status'}[fid];
-    if(el && r[key]) el.value=r[key];
-  });
-  const t=document.getElementById('pstFormTitle');
-  if(t) t.innerHTML=`<i class="fa-solid fa-pen"></i> Edit — ${r.name}`;
-  openPlatStaffTab('pstAdd', document.getElementById('pstbAdd'));
-}
-
-function platDeleteStaff(id) {
-  if(!confirm('Delete this staff record? This cannot be undone.')) return;
-  let data = loadStaffDetails().filter(r=>r.id!==id);
-  saveStaffDetailsStorage(data);
-  platRenderStaffList(); platPopulateDocDropdown();
-  sdpRenderList(); sdpPopulateDropdowns(); populateStaffDropdowns();
-  showToast('Staff record deleted.');
-}
-
-function platSaveRole() {
-  const name=(document.getElementById('psrName')?.value||'').trim();
-  const dept=document.getElementById('psrDept')?.value||'';
-  const desc=(document.getElementById('psrDesc')?.value||'').trim();
-  if(!name){alert('Role name is required.');return;}
-  let roles=JSON.parse(localStorage.getItem('charanas_staffRoles')||'[]');
-  roles.push({id:'sr_'+Date.now(),name,dept,desc});
-  localStorage.setItem('charanas_staffRoles',JSON.stringify(roles));
-  platRenderRolesList(); sdpRenderRolesList();
-  document.getElementById('psrName').value='';
-  document.getElementById('psrDesc').value='';
-  showToast('Role saved.');
-}
-
-function platRenderRolesList() {
-  const el=document.getElementById('platRolesList'); if(!el) return;
-  const roles=JSON.parse(localStorage.getItem('charanas_staffRoles')||'[]');
-  if(!roles.length){el.innerHTML='<p style="color:var(--muted);font-size:.85rem">No roles defined yet.</p>';return;}
-  el.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>#</th><th>Role</th><th>Department</th><th>Description</th><th>Action</th></tr></thead>
-  <tbody>${roles.map((r,i)=>`<tr><td>${i+1}</td><td><strong>${r.name}</strong></td><td>${r.dept}</td><td>${r.desc||'—'}</td>
-  <td><button class="btn btn-danger btn-xs" onclick="platDeleteRole('${r.id}')"><i class="fa-solid fa-trash"></i></button></td></tr>`).join('')}</tbody></table></div>`;
-}
-
-function platDeleteRole(id) {
-  if(!confirm('Delete this role?')) return;
-  let roles=JSON.parse(localStorage.getItem('charanas_staffRoles')||'[]').filter(r=>r.id!==id);
-  localStorage.setItem('charanas_staffRoles',JSON.stringify(roles));
-  platRenderRolesList(); sdpRenderRolesList();
-}
-
-function platPopulateDocDropdown() {
-  const staff=loadStaffDetails();
-  const sel=document.getElementById('psdocStaff'); if(!sel) return;
-  const cur=sel.value;
-  sel.innerHTML='<option value="">— Select Staff —</option>'+
-    staff.map(s=>`<option value="${s.id}">${s.name}${s.role?' — '+s.role:''}</option>`).join('');
-  if(cur) sel.value=cur;
-}
-
-function platHandleDocUpload(input) {
-  const file=input.files[0]; if(!file) return;
-  const staffSel=document.getElementById('psdocStaff');
-  const staffName=staffSel?.options[staffSel.selectedIndex]?.text||'Unknown';
-  const type=document.getElementById('psdocType')?.value||'Other';
-  let docs=JSON.parse(localStorage.getItem(staffDocsKey())||'[]');
-  docs.push({id:'doc_'+Date.now(),staff:staffName,type,filename:file.name,size:(file.size/1024).toFixed(1)+' KB',uploaded:new Date().toLocaleDateString()});
-  localStorage.setItem(staffDocsKey(),JSON.stringify(docs));
-  platRenderDocsList(); sdpRenderDocsList();
-  input.value=''; showToast(`Document "${file.name}" recorded.`);
-}
-
-function platRenderDocsList() {
-  const el=document.getElementById('platDocsList'); if(!el) return;
-  const docs=JSON.parse(localStorage.getItem(staffDocsKey())||'[]');
-  if(!docs.length){el.innerHTML='<p style="color:var(--muted);font-size:.85rem;text-align:center;padding:1.5rem">No documents recorded yet.</p>';return;}
-  el.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>#</th><th>Staff</th><th>Type</th><th>Filename</th><th>Size</th><th>Date</th><th>Action</th></tr></thead>
-  <tbody>${docs.map((d,i)=>`<tr><td>${i+1}</td><td>${d.staff}</td><td>${d.type}</td><td><i class="fa-solid fa-file"></i> ${d.filename}</td><td>${d.size}</td><td>${d.uploaded}</td>
-  <td><button class="btn btn-danger btn-xs" onclick="platDeleteDoc('${d.id}')"><i class="fa-solid fa-trash"></i></button></td></tr>`).join('')}</tbody></table></div>`;
-}
-
-function platDeleteDoc(id) {
-  if(!confirm('Remove this document record?')) return;
-  let docs=JSON.parse(localStorage.getItem(staffDocsKey())||'[]').filter(d=>d.id!==id);
-  localStorage.setItem(staffDocsKey(),JSON.stringify(docs));
-  platRenderDocsList(); sdpRenderDocsList();
-}
 
 
 
@@ -19270,5 +21762,401 @@ function rptBarChart(obj, total, defaultColor, colorMap) {
   }).join('');
 }
 
+/* ═══════════════════════════════════════════════════════
+   ACCESS CONTROL LEVEL MANAGEMENT — Platform Admin
+   ═══════════════════════════════════════════════════════ */
 
+const AC_PRICING_KEY = 'ac_level_pricing';
+const AC_LEVEL_NAMES = ['Basic','Standard','Advanced','Enterprise'];
+const AC_LEVEL_COLORS = ['#3b82f6','#8b5cf6','#f59e0b','#ef4444'];
+const AC_LEVEL_FEATURES = [
+  ['Exam Analysis','Add Teachers','Add Students'],
+  ['Exam Analysis','Add Teachers','Add Students','Timetable'],
+  ['Exam Analysis','Add Teachers','Add Students','Timetable','Fees Management'],
+  ['Exam Analysis','Add Teachers','Add Students','Timetable','Fees Management','Salary Management','Full Reports','System Settings']
+];
+
+function acLoadPricing() {
+  try { return JSON.parse(localStorage.getItem(AC_PRICING_KEY)) || {}; } catch { return {}; }
 }
+function acSavePricingData(data) {
+  localStorage.setItem(AC_PRICING_KEY, JSON.stringify(data));
+}
+
+function acInitPricing() {
+  const stored = acLoadPricing();
+  [0,1,2,3].forEach(i => {
+    const inst = document.getElementById('acPrice'+i+'_install');
+    const mon  = document.getElementById('acPrice'+i+'_monthly');
+    if (!inst || !mon) return;
+    if (stored['install_'+i] !== undefined) inst.value = stored['install_'+i];
+    if (stored['monthly_'+i] !== undefined) mon.value  = stored['monthly_'+i];
+    acUpdateAnnual(i);
+  });
+}
+
+function acUpdateAnnual(i) {
+  const mon = parseFloat(document.getElementById('acPrice'+i+'_monthly')?.value) || 0;
+  const el  = document.getElementById('acPrice'+i+'_annual');
+  if (el) el.textContent = 'KES ' + (mon * 12).toLocaleString();
+}
+
+function acSavePricing() {
+  const data = {};
+  [0,1,2,3].forEach(i => {
+    data['install_'+i] = parseFloat(document.getElementById('acPrice'+i+'_install')?.value) || 0;
+    data['monthly_'+i] = parseFloat(document.getElementById('acPrice'+i+'_monthly')?.value) || 0;
+  });
+  acSavePricingData(data);
+  const msg = document.getElementById('acPriceSaveMsg');
+  if (msg) { msg.innerHTML = '<i class="fa-solid fa-check" style="color:#22c55e"></i> Pricing saved'; setTimeout(()=>{ msg.textContent=''; }, 2500); }
+}
+
+function acShowLevelTab(idx) {
+  [0,1,2,3].forEach(i => {
+    const panel = document.getElementById('acLevelPanel'+i);
+    const btn   = document.getElementById('acLevelTabBtn'+i);
+    if (panel) panel.style.display = i===idx ? 'block' : 'none';
+    if (btn) {
+      if (i===idx) {
+        btn.style.background = AC_LEVEL_COLORS[i];
+        btn.style.color = '#fff';
+        btn.style.borderColor = AC_LEVEL_COLORS[i];
+        btn.className = 'btn btn-sm';
+      } else {
+        btn.style.background = '';
+        btn.style.color = '';
+        btn.style.borderColor = '';
+        btn.className = 'btn btn-sm btn-outline';
+      }
+    }
+  });
+}
+
+function acGetSchoolLevel(schoolId) {
+  try {
+    const map = JSON.parse(localStorage.getItem('ac_school_levels')) || {};
+    return map[schoolId] !== undefined ? map[schoolId] : null;
+  } catch { return null; }
+}
+
+function acSetSchoolLevel(schoolId, levelIdx) {
+  try {
+    const map = JSON.parse(localStorage.getItem('ac_school_levels')) || {};
+    map[schoolId] = levelIdx;
+    localStorage.setItem('ac_school_levels', JSON.stringify(map));
+  } catch {}
+}
+
+function acGetSchoolActive(schoolId) {
+  try {
+    // Always read from the canonical school.active flag so Access tab
+    // stays in sync with the Schools tab and login blocking.
+    loadPlatform();
+    const school = platformSchools.find(s => s.id === schoolId);
+    if (school) return school.active !== false;
+    // Fallback to ac_school_active for schools not yet in platform
+    const map = JSON.parse(localStorage.getItem('ac_school_active')) || {};
+    return map[schoolId] !== false;
+  } catch { return true; }
+}
+
+function acToggleSchoolActive(schoolId) {
+  const currentlyActive = acGetSchoolActive(schoolId);
+  if (currentlyActive) {
+    // Deactivating — delegate to the full suspend flow (confirmation modal + message)
+    loadPlatform();
+    const school = platformSchools.find(s => s.id === schoolId);
+    if (!school) return;
+    openSuspendModal(schoolId, school);
+    // After confirmSuspendSchool runs, sync ac_school_active too
+    const _origConfirm = window._acSuspendHooked;
+    if (!_origConfirm) {
+      window._acSuspendHooked = true;
+      const _baseConfirm = window.confirmSuspendSchool;
+      window.confirmSuspendSchool = function(id) {
+        _baseConfirm(id);
+        try {
+          const map = JSON.parse(localStorage.getItem('ac_school_active')) || {};
+          map[id] = false;
+          localStorage.setItem('ac_school_active', JSON.stringify(map));
+        } catch {}
+        acRenderSchoolList();
+        acUpdateActiveSummary();
+      };
+    }
+  } else {
+    // Re-activating — no confirmation needed
+    loadPlatform();
+    const school = platformSchools.find(s => s.id === schoolId);
+    if (school) {
+      school.active = true;
+      school.deactivationMessage = '';
+      savePlatform();
+    }
+    try {
+      const map = JSON.parse(localStorage.getItem('ac_school_active')) || {};
+      map[schoolId] = true;
+      localStorage.setItem('ac_school_active', JSON.stringify(map));
+    } catch {}
+    acRenderSchoolList();
+    acUpdateActiveSummary();
+    renderPlatformSchoolMgmtList();
+    showToast('<i class="fa-solid fa-circle-check"></i> School access restored — users can log in again', 'success');
+  }
+}
+
+function acActivateAll() {
+  try {
+    loadPlatform();
+    const map = JSON.parse(localStorage.getItem('ac_school_active')) || {};
+    platformSchools.forEach(s => {
+      map[s.id] = true;
+      s.active = true;
+      s.deactivationMessage = '';
+    });
+    localStorage.setItem('ac_school_active', JSON.stringify(map));
+    savePlatform();
+    acRenderSchoolList();
+    acUpdateActiveSummary();
+    renderPlatformSchoolMgmtList();
+    showToast('<i class="fa-solid fa-circle-check"></i> All schools activated — users can log in', 'success');
+  } catch {}
+}
+
+function acDeactivateAll() {
+  if (!confirm('Suspend ALL schools? Their staff and students will be blocked from logging in.\n\nYou can re-activate them individually or use \"Activate All\" to restore access.')) return;
+  try {
+    loadPlatform();
+    const map = JSON.parse(localStorage.getItem('ac_school_active')) || {};
+    platformSchools.forEach(s => {
+      map[s.id] = false;
+      s.active = false;
+      if (!s.deactivationMessage) s.deactivationMessage = 'Your school subscription has been suspended. Please contact the platform administrator.';
+      s.suspendedAt = new Date().toISOString();
+    });
+    localStorage.setItem('ac_school_active', JSON.stringify(map));
+    savePlatform();
+    acRenderSchoolList();
+    acUpdateActiveSummary();
+    renderPlatformSchoolMgmtList();
+    showToast('<i class="fa-solid fa-circle-xmark"></i> All schools suspended — use Activate All to restore', 'error');
+  } catch {}
+}
+
+function acUpdateActiveSummary() {
+  try {
+    loadPlatform();
+    const total = platformSchools.length;
+    const active = platformSchools.filter(s => acGetSchoolActive(s.id)).length;
+    const el = document.getElementById('acActiveSummary');
+    if (el) el.innerHTML = `<span style="color:#22c55e;font-weight:700">${active} active</span> <span style="color:var(--muted)">/ ${total} total</span>`;
+  } catch {}
+}
+
+function acRenderSchoolList() {
+  const el = document.getElementById('acSchoolList');
+  if (!el) return;
+  loadPlatform();
+  const q = (document.getElementById('acSchoolSearch')?.value || '').toLowerCase();
+  const schools = platformSchools.filter(s => !q || s.name.toLowerCase().includes(q));
+  if (!schools.length) {
+    el.innerHTML = '<p style="font-size:.85rem;color:var(--muted);padding:.5rem 0">No schools found. Add schools in the Schools tab first.</p>';
+    acUpdateActiveSummary();
+    return;
+  }
+  el.innerHTML = schools.map(s => {
+    const lvl     = acGetSchoolLevel(s.id);
+    const active  = acGetSchoolActive(s.id);
+    const initials = s.name.split(' ').slice(0,2).map(w=>w[0]||'').join('').toUpperCase();
+    const color   = lvl !== null ? AC_LEVEL_COLORS[lvl] : '#94a3b8';
+    const levelBtns = AC_LEVEL_NAMES.map((n,i) =>
+      `<button class="ac-lvl-btn ${lvl===i?'active-'+i:''}" onclick="acAssignLevel('${s.id}',${i})">${n}</button>`
+    ).join('');
+    const toggleLabel = active
+      ? `<i class="fa-solid fa-toggle-on" style="color:#22c55e;font-size:1rem"></i> Active`
+      : `<i class="fa-solid fa-toggle-off" style="color:#94a3b8;font-size:1rem"></i> Inactive`;
+    const toggleStyle = active
+      ? 'font-size:.72rem;font-weight:700;padding:.28rem .65rem;border-radius:6px;cursor:pointer;font-family:inherit;border:1.5px solid #22c55e;background:rgba(34,197,94,.08);color:#15803d;display:flex;align-items:center;gap:.3rem'
+      : 'font-size:.72rem;font-weight:700;padding:.28rem .65rem;border-radius:6px;cursor:pointer;font-family:inherit;border:1.5px solid #ef4444;background:rgba(239,68,68,.07);color:#b91c1c;display:flex;align-items:center;gap:.3rem';
+    return `<div class="ac-school-row" id="acRow-${s.id}" style="border-left:3px solid ${color}">
+      <div class="ac-school-avatar" style="background:${color}">${initials}</div>
+      <div class="ac-school-name">${s.name}<div style="font-size:.72rem;font-weight:400;color:var(--muted)">${s.username} · ${s.code||''}</div></div>
+      <div class="ac-level-btns">${levelBtns}</div>
+      <span class="ac-status-pill ${active?'ac-pill-on':'ac-pill-off'}">${active?'● Active':'○ Inactive'}</span>
+      <button onclick="acToggleSchoolActive('${s.id}')" style="${toggleStyle}" title="${active?'Click to deactivate':'Click to activate'} access">
+        ${toggleLabel}
+      </button>
+    </div>`;
+  }).join('');
+  acUpdateActiveSummary();
+}
+
+
+function acAssignLevel(schoolId, levelIdx) {
+  acSetSchoolLevel(schoolId, levelIdx);
+  acRenderSchoolList();
+  const school = platformSchools.find(s=>s.id===schoolId);
+  showToast(`<i class="fa-solid fa-layer-group"></i> <strong>${school?.name||schoolId}</strong> → ${AC_LEVEL_NAMES[levelIdx]} access assigned`, 'success');
+}
+
+function acDownloadLevelPDF(levelIdx) {
+  const pricing = acLoadPricing();
+  const lv = {
+    name: AC_LEVEL_NAMES[levelIdx],
+    color: AC_LEVEL_COLORS[levelIdx],
+    features: AC_LEVEL_FEATURES[levelIdx],
+    installation: pricing['install_'+levelIdx] || [5000,10000,20000,50000][levelIdx],
+    monthly: pricing['monthly_'+levelIdx] || [2000,4000,7500,15000][levelIdx]
+  };
+  loadPlatform();
+  const allFeats = ['Exam Analysis','Add Teachers','Add Students','Timetable','Fees Management','Salary Management','Full Reports','System Settings'];
+  const featsHTML = allFeats.map(f=>{
+    const has = lv.features.includes(f);
+    return `<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:7px 10px;border-radius:6px;border:1px solid ${has?'#bbf7d0':'#e2e8f0'};background:${has?'#f0fdf4':'#f8fafc'};margin-bottom:5px">
+      <span style="color:${has?'#16a34a':'#94a3b8'};font-size:15px;font-weight:700">${has?'✓':'✗'}</span>
+      <span style="font-weight:${has?'700':'400'};color:${has?'#15803d':'#94a3b8'}">${f}</span>
+      ${has?`<span style="margin-left:auto;font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;background:rgba(34,197,94,.15);color:#15803d">Included</span>`:`<span style="margin-left:auto;font-size:10px;color:#94a3b8">Not included</span>`}
+    </div>`;
+  }).join('');
+
+  // Schools on this level
+  const levelSchools = platformSchools.filter(s => acGetSchoolLevel(s.id) === levelIdx);
+  const schoolRows = levelSchools.length ? levelSchools.map(s => {
+    const active = acGetSchoolActive(s.id);
+    return `<tr><td style="padding:7px 10px;font-weight:600;font-size:12px">${s.name}</td>
+      <td style="padding:7px 10px;font-size:12px;color:#64748b">${s.username}</td>
+      <td style="padding:7px 10px"><span style="font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;background:${active?'rgba(34,197,94,.12)':'rgba(239,68,68,.1)'};color:${active?'#15803d':'#b91c1c'}">${active?'● Active':'○ Inactive'}</span></td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="3" style="padding:12px;text-align:center;color:#94a3b8;font-size:12px;font-style:italic">No schools assigned to this level</td></tr>`;
+
+  const annual = lv.monthly * 12;
+  const html = `<!DOCTYPE html><html><head><title>${lv.name} Level — SchoolPro Access Control</title>
+  <style>body{font-family:Arial,sans-serif;margin:0;padding:28px 32px;color:#1e293b}@media print{.noprint{display:none}}</style></head>
+  <body>
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:${lv.color};margin-bottom:4px">Subscription Level ${levelIdx+1}</div>
+        <h1 style="font-size:26px;font-weight:800;margin:0 0 2px">${lv.name}</h1>
+        <div style="font-size:11px;color:#64748b">Generated: ${new Date().toLocaleDateString('en-KE',{year:'numeric',month:'long',day:'numeric'})}</div>
+      </div>
+      <button class="noprint" onclick="window.print()" style="background:${lv.color};color:#fff;border:none;padding:9px 20px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">🖨 Print / Save PDF</button>
+    </div>
+    <div style="height:4px;background:${lv.color};border-radius:2px;margin:12px 0 22px"></div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:24px">
+      <div style="border-radius:10px;padding:14px 16px;background:#f8fafc;border:1.5px solid #e2e8f0;text-align:center">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#64748b;margin-bottom:4px">Installation Fee</div>
+        <div style="font-size:22px;font-weight:800;color:#1e293b">KES ${lv.installation.toLocaleString()}</div>
+        <div style="font-size:10px;color:#94a3b8">one-time</div>
+      </div>
+      <div style="border-radius:10px;padding:14px 16px;background:#f8fafc;border:1.5px solid #e2e8f0;text-align:center">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#64748b;margin-bottom:4px">Monthly</div>
+        <div style="font-size:22px;font-weight:800;color:#1e293b">KES ${lv.monthly.toLocaleString()}</div>
+        <div style="font-size:10px;color:#94a3b8">per month</div>
+      </div>
+      <div style="border-radius:10px;padding:14px 16px;background:${lv.color}1a;border:1.5px solid ${lv.color}44;text-align:center">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#64748b;margin-bottom:4px">Annual</div>
+        <div style="font-size:22px;font-weight:800;color:${lv.color}">KES ${annual.toLocaleString()}</div>
+        <div style="font-size:10px;color:#94a3b8">per year</div>
+      </div>
+    </div>
+
+    <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#334155;margin:0 0 10px">Feature Access</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:24px">${featsHTML}</div>
+
+    <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#334155;margin:0 0 10px">Schools on This Level (${levelSchools.length})</h2>
+    <table style="width:100%;border-collapse:collapse;border:1.5px solid #e2e8f0;border-radius:8px;overflow:hidden">
+      <thead><tr style="background:#f8fafc">
+        <th style="padding:9px 10px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.04em">School Name</th>
+        <th style="padding:9px 10px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.04em">Login</th>
+        <th style="padding:9px 10px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.04em">Status</th>
+      </tr></thead>
+      <tbody>${schoolRows}</tbody>
+    </table>
+    <div style="margin-top:22px;font-size:10px;color:#94a3b8;text-align:center;border-top:1px solid #f1f5f9;padding-top:10px">SchoolPro Platform Admin — ${lv.name} Level Access Control Document — Confidential</div>
+  </body></html>`;
+
+  const w = window.open('','_blank','width=800,height=700');
+  w.document.write(html);
+  w.document.close();
+  setTimeout(()=>w.focus(), 300);
+}
+
+
+function acDownloadPDF() {
+  const pricing = acLoadPricing();
+  const levelData = [0,1,2,3].map(i=>({
+    name: AC_LEVEL_NAMES[i],
+    color: AC_LEVEL_COLORS[i],
+    features: AC_LEVEL_FEATURES[i],
+    installation: pricing['install_'+i] || [5000,10000,20000,50000][i],
+    monthly: pricing['monthly_'+i] || [2000,4000,7500,15000][i]
+  }));
+  loadPlatform();
+  const schoolData = platformSchools.map(s=>({
+    name: s.name,
+    level: acGetSchoolLevel(s.id) !== null ? AC_LEVEL_NAMES[acGetSchoolLevel(s.id)] : 'Unassigned',
+    levelIdx: acGetSchoolLevel(s.id),
+    active: acGetSchoolActive(s.id)
+  }));
+
+  // Build printable HTML and open in new window for PDF
+  const rows = levelData.map((lv,i) => {
+    const allFeats = ['Exam Analysis','Add Teachers','Add Students','Timetable','Fees Management','Salary Management','Full Reports','System Settings'];
+    const featsHTML = allFeats.map(f=>{
+      const has = lv.features.includes(f);
+      return `<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:5px 8px;border-radius:5px;border:1px solid ${has?'#bbf7d0':'#e2e8f0'};background:${has?'#f0fdf4':'#f8fafc'};margin-bottom:4px">
+        <span style="color:${has?'#16a34a':'#94a3b8'};font-size:13px">${has?'✓':'✗'}</span>
+        <span style="font-weight:${has?'600':'400'};color:${has?'#15803d':'#94a3b8'}">${f}</span>
+      </div>`;
+    }).join('');
+    const annual = lv.monthly * 12;
+    return `<div style="border:1.5px solid #e2e8f0;border-left:5px solid ${lv.color};border-radius:10px;padding:14px 16px;margin-bottom:14px;break-inside:avoid">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <div style="width:32px;height:32px;border-radius:50%;background:${lv.color};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px">L${i+1}</div>
+        <div><div style="font-size:15px;font-weight:700">${lv.name}</div><div style="font-size:11px;color:#64748b">Level ${i+1}</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:12px">${featsHTML}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;background:#f8fafc;border-radius:7px;padding:10px">
+        <div style="text-align:center"><div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Installation</div><div style="font-size:14px;font-weight:700;color:#1e293b">KES ${lv.installation.toLocaleString()}</div></div>
+        <div style="text-align:center;border-left:1px solid #e2e8f0"><div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Monthly</div><div style="font-size:14px;font-weight:700;color:#1e293b">KES ${lv.monthly.toLocaleString()}</div></div>
+        <div style="text-align:center;border-left:1px solid #e2e8f0"><div style="font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Annual</div><div style="font-size:14px;font-weight:700;color:${lv.color}">KES ${annual.toLocaleString()}</div></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const schoolRows = schoolData.map(s=>{
+    const c = s.levelIdx!==null ? AC_LEVEL_COLORS[s.levelIdx] : '#94a3b8';
+    return `<tr style="border-bottom:1px solid #f1f5f9">
+      <td style="padding:7px 10px;font-weight:600;font-size:12px">${s.name}</td>
+      <td style="padding:7px 10px"><span style="background:${c}1a;color:${c};font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px">${s.level}</span></td>
+      <td style="padding:7px 10px"><span style="font-size:11px;font-weight:700;color:${s.active?'#16a34a':'#ef4444'}">${s.active?'Active':'Inactive'}</span></td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html><head><title>Access Level Control — SchoolPro</title>
+  <style>body{font-family:Arial,sans-serif;margin:0;padding:24px;color:#1e293b}h1{font-size:20px;font-weight:700;margin-bottom:4px}h2{font-size:15px;font-weight:700;margin:18px 0 10px;color:#334155}@media print{.noprint{display:none}}</style></head>
+  <body>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+    <div><h1>SchoolPro — Access Level Control</h1><div style="font-size:11px;color:#64748b">Generated: ${new Date().toLocaleDateString('en-KE',{year:'numeric',month:'long',day:'numeric'})}</div></div>
+    <button class="noprint" onclick="window.print()" style="background:#4f46e5;color:#fff;border:none;padding:8px 18px;border-radius:7px;cursor:pointer;font-size:13px;font-weight:700">🖨 Print / Save PDF</button>
+  </div>
+  <div style="height:3px;background:linear-gradient(90deg,#4f46e5,#10b981);border-radius:2px;margin:12px 0 18px"></div>
+  <h2>Subscription Levels</h2>
+  ${rows}
+  <h2 style="margin-top:20px">School Assignments</h2>
+  <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+    <thead><tr style="background:#f8fafc"><th style="padding:8px 10px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.04em">School</th><th style="padding:8px 10px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.04em">Level</th><th style="padding:8px 10px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.04em">Status</th></tr></thead>
+    <tbody>${schoolRows}</tbody>
+  </table>
+  <div style="margin-top:20px;font-size:10px;color:#94a3b8;text-align:center;border-top:1px solid #f1f5f9;padding-top:10px">SchoolPro Platform Admin — Confidential Access Control Document</div>
+  </body></html>`;
+
+  const w = window.open('','_blank','width=800,height=700');
+  w.document.write(html);
+  w.document.close();
+  setTimeout(()=>w.focus(), 300);
+}
+
+// Access control init is hooked into openPlatTab directly above
