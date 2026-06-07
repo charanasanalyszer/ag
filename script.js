@@ -4444,11 +4444,11 @@ function defaultSettings() {
 // ═══════════════ SEED DATA ═══════════════
 function seedData() {
   if (!classes.length) {
-    classes = [{ id:'cls1', name:'Grade 9', level:'9' }, { id:'cls2', name:'Grade 8', level:'8' }];
+    classes = [{ id:'cls1', name:'Grade 9', level:'9' }];
     save(K.classes, classes);
   }
   if (!streams.length) {
-    streams = [{ id:'str1', name:'E/W', classId:'cls1' }, { id:'str2', name:'North', classId:'cls2' }];
+    streams = [{ id:'str1', name:'S', classId:'cls1' }];
     save(K.streams, streams);
   }
   if (!subjects.length) {
@@ -4466,7 +4466,94 @@ function seedData() {
     save(K.subjects, subjects);
   }
   if (!students.length) {
-    const raw = [];
+    const raw = [
+      ['9S1','AISHA MUHAVI','F','cls1','str1','',''],
+      ['9S2','ALFRED OCHAMI MUTENDE','M','cls1','str1','',''],
+      ['9S3','ALICE NAFULA WANJALA','F','cls1','str1','',''],
+      ['9S4','ANGEL MWANGAZA NANDWA','F','cls1','str1','',''],
+      ['9S5','ANGELA LUNG\'AZO SANGOLE','F','cls1','str1','',''],
+      ['9S6','ANN MORAA','F','cls1','str1','',''],
+      ['9S7','ANTONY NYAGA','M','cls1','str1','',''],
+      ['9S8','ARSHLEY KIBAELO NDMBUKA','M','cls1','str1','',''],
+      ['9S9','ASHLENE VUJENDE','F','cls1','str1','',''],
+      ['9S10','AUSTINE MANG\'OLI','M','cls1','str1','',''],
+      ['9S11','BARAZA PAULINE ASIKO','F','cls1','str1','',''],
+      ['9S12','BILLGATES MULIRO SHEM','M','cls1','str1','',''],
+      ['9S13','BRAVINE OMOLO','F','cls1','str1','',''],
+      ['9S14','BRENDA LUMADI INGOSI','F','cls1','str1','',''],
+      ['9S15','BRENDA MUTHONI WANJIRU','F','cls1','str1','',''],
+      ['9S16','BRIDEN INJENI','M','cls1','str1','',''],
+      ['9S17','BRUCE KIOKO WAMBUA','M','cls1','str1','',''],
+      ['9S18','CEDRIC JUNIOR','M','cls1','str1','',''],
+      ['9S19','CHARLES ROBERT','M','cls1','str1','',''],
+      ['9S20','CHERRYL AHERI LUSASI','F','cls1','str1','',''],
+      ['9S21','CHRISTINE WAMBUI','F','cls1','str1','',''],
+      ['9S22','CLARE CHEPCHIRCHIR','F','cls1','str1','',''],
+      ['9S23','CLARIES APIYO OTIENO','F','cls1','str1','',''],
+      ['9S24','CLARISA KAGALI MGODO','F','cls1','str1','',''],
+      ['9S25','CYNTHIA AYUGA LUMBETE','F','cls1','str1','',''],
+      ['9S26','CYNTHIA MUSIMBI CHOGO','F','cls1','str1','',''],
+      ['9S27','DAVID CAMRON ODOYO','M','cls1','str1','',''],
+      ['9S28','DOUGLAS WAIRIMU','M','cls1','str1','',''],
+      ['9S29','DUNFORD AFANDA','M','cls1','str1','',''],
+      ['9S30','ELVIS BUSOLO','M','cls1','str1','',''],
+      ['9S31','ELVIS NG\'ANG\'A','M','cls1','str1','',''],
+      ['9S32','ELVIS SHIKOKOTI','M','cls1','str1','',''],
+      ['9S33','EMMACULATE SHIKUKU','F','cls1','str1','',''],
+      ['9S34','EMMANUEL SHIVUAVI','M','cls1','str1','',''],
+      ['9S35','ESTHER WAMUYU MURITHI','F','cls1','str1','',''],
+      ['9S36','EVANS MASINDE','M','cls1','str1','',''],
+      ['9S37','FAITH MAKUNGU AZIANJI','F','cls1','str1','',''],
+      ['9S38','FIDEL CHIMOSO','M','cls1','str1','',''],
+      ['9S39','FRANKLINE REAGAN','M','cls1','str1','',''],
+      ['9S40','GEORGE WAWERU KINYUA','M','cls1','str1','',''],
+      ['9S41','GLOE GLOVIAN MUHERE','F','cls1','str1','',''],
+      ['9S42','GRANTON SUMAYAN SAITOTI','M','cls1','str1','',''],
+      ['9S43','HOPELISER INDASI MAVIALA','F','cls1','str1','',''],
+      ['9S44','JAMES MUTAMU','M','cls1','str1','',''],
+      ['9S45','JOB OMOYO GITAI','M','cls1','str1','',''],
+      ['9S46','JOSHUA HEI','M','cls1','str1','',''],
+      ['9S47','KENNEDY KUYEBI','M','cls1','str1','',''],
+      ['9S48','LASHOWN MUSANGA','M','cls1','str1','',''],
+      ['9S49','LAUREEN ATIENO','F','cls1','str1','',''],
+      ['9S50','LEAH SHANNEL WANYONYI','F','cls1','str1','',''],
+      ['9S51','LESLYNE KALEHA','F','cls1','str1','',''],
+      ['9S52','MARY ANN NJERI','F','cls1','str1','',''],
+      ['9S53','MARY KEMUNTO MIGIRO','F','cls1','str1','',''],
+      ['9S54','MELVINE SHICHEYI SHISUMU','F','cls1','str1','',''],
+      ['9S55','MISHEALL AMBUSO SALIKU','F','cls1','str1','',''],
+      ['9S56','MUREITHI TRACY WANINI','F','cls1','str1','',''],
+      ['9S57','NANCY MWENDE','F','cls1','str1','',''],
+      ['9S58','NAOMI SYOMITI MOSE','F','cls1','str1','',''],
+      ['9S59','NICOLE KENYANI MBUKA','F','cls1','str1','',''],
+      ['9S60','NYAGAKA BRIGHTON','M','cls1','str1','',''],
+      ['9S61','PETER NJOROGE MUMBI','M','cls1','str1','',''],
+      ['9S62','PHELDAH LIHAVI GIMONDE','F','cls1','str1','',''],
+      ['9S63','PHILIP GITONGA MURAGE','M','cls1','str1','',''],
+      ['9S64','PHILLBROWN ICHOLI','M','cls1','str1','',''],
+      ['9S65','PRECIOUS MINAYO','F','cls1','str1','',''],
+      ['9S66','PRECIOUS MURONJI','F','cls1','str1','',''],
+      ['9S67','PRYIAN KIGAMWA','M','cls1','str1','',''],
+      ['9S68','QUINTER SIMIYU','F','cls1','str1','',''],
+      ['9S69','RACHAEL WANJIKU WAIRIMU','F','cls1','str1','',''],
+      ['9S70','RAISY NASAKA WANJALA','F','cls1','str1','',''],
+      ['9S71','RAPHAEL EUSEBIAS','M','cls1','str1','',''],
+      ['9S72','ROBERT OCHARO','M','cls1','str1','',''],
+      ['9S73','RUTH IMALI ANYULA','F','cls1','str1','',''],
+      ['9S74','RUTH NAFULA SIMIYU','F','cls1','str1','',''],
+      ['9S75','SALINE AKINYI','F','cls1','str1','',''],
+      ['9S76','SAMWEL NYEGENYE MUSIKO','M','cls1','str1','',''],
+      ['9S77','SHANTEL NJERI GICHAMBA','F','cls1','str1','',''],
+      ['9S78','SHARON KERUBO','F','cls1','str1','',''],
+      ['9S79','STACIAL JANE','F','cls1','str1','',''],
+      ['9S80','STEPHANIE KAHAI','F','cls1','str1','',''],
+      ['9S81','STEPHANY ATIENO','F','cls1','str1','',''],
+      ['9S82','TREZY AKINYI','F','cls1','str1','',''],
+      ['9S83','VALARY NANCHA OUMA','F','cls1','str1','',''],
+      ['9S84','VICTORIA WEVETI MURIITHI','F','cls1','str1','',''],
+      ['9S85','WILLY ATAMU LUNYAGI','M','cls1','str1','',''],
+      ['9S86','BEATRICE','F','cls1','str1','',''],
+    ];
     students = raw.map(r => ({
       id: uid(), adm:r[0], name:r[1], gender:r[2],
       classId:r[3], streamId:r[4], parent:r[5], contact:r[6], dob:'', notes:'',
