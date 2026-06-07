@@ -193,66 +193,25 @@ const load = k => { try { return JSON.parse(localStorage.getItem(k)) || []; } ca
 const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
 const uid  = () => 'id_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
 
-// ═══════════════ INDEXEDDB (marks + students — large arrays) ═══════════════
-const IDB_NAME = 'af_main_db';
-const IDB_STORE = 'kv';
-const IDB_VERSION = 1;
-let _idb = null;
+// ═══════════════ STORAGE — pure localStorage (sync, instant) ═══════════════
+// Everything is stored in browser localStorage.
+// idbPut/idbGet/idbDelete are thin sync wrappers kept so all call-sites
+// (saveMarks, saveStudents, loadSchoolContext, etc.) work without change.
+// loadIDB / saveIDB are kept as async stubs for the same reason.
 
-function openIDB() {
-  if (_idb) return Promise.resolve(_idb);
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
-    req.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE);
-    req.onsuccess = e => { _idb = e.target.result; resolve(_idb); };
-    req.onerror   = e => reject(e.target.error);
-  });
+function idbPut(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch(e) { console.warn('storage full?', e); }
 }
-
-async function idbGet(key) {
-  try {
-    const db = await openIDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(IDB_STORE, 'readonly');
-      const req = tx.objectStore(IDB_STORE).get(key);
-      req.onsuccess = () => resolve(req.result ?? null);
-      req.onerror   = () => reject(req.error);
-    });
-  } catch(e) { return null; }
+function idbGet(key) {
+  try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : null; } catch(e) { return null; }
 }
-
-async function idbPut(key, value) {
-  try {
-    const db = await openIDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(IDB_STORE, 'readwrite');
-      const req = tx.objectStore(IDB_STORE).put(value, key);
-      req.onsuccess = () => resolve();
-      req.onerror   = () => reject(req.error);
-    });
-  } catch(e) { /* silent */ }
+function idbDelete(key) {
+  try { localStorage.removeItem(key); } catch(e) { /* silent */ }
 }
+async function saveIDB(key, arr) { idbPut(key, arr); }
+async function loadIDB(key) { const v = idbGet(key); return Array.isArray(v) ? v : []; }
 
-async function idbDelete(key) {
-  try {
-    const db = await openIDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(IDB_STORE, 'readwrite');
-      const req = tx.objectStore(IDB_STORE).delete(key);
-      req.onsuccess = () => resolve();
-      req.onerror   = () => reject(req.error);
-    });
-  } catch(e) { /* silent */ }
-}
-
-// Async save/load for IDB-backed keys; falls back gracefully
-async function saveIDB(key, arr) { await idbPut(key, arr); }
-async function loadIDB(key) {
-  const val = await idbGet(key);
-  return Array.isArray(val) ? val : [];
-}
-
-// Write-through helpers — keep in-memory array current, persist to IDB async
+// Write-through helpers — keep in-memory array current, persist to localStorage
 function saveMarks()    { idbPut(K.marks,    marks);    }
 function saveStudents() { idbPut(K.students, students); }
 
@@ -3970,7 +3929,7 @@ function loadSchoolContextSync(school) {
 
 async function loadSchoolContext(school) {
   currentSchoolId = school.id;
-  // Small arrays — fast sync localStorage
+  // All data is in localStorage — fully synchronous, no async wait
   subjects  = load(K.subjects);
   teachers  = load(K.teachers); classes  = load(K.classes);
   streams   = load(K.streams);  exams    = load(K.exams);
@@ -3978,26 +3937,9 @@ async function loadSchoolContext(school) {
   admins    = load(K.admins);   msgLog   = load(K.msgLog);
   heldExams = load(K.heldExams);
   smsCredits = parseInt(localStorage.getItem(K.smsCredits) || '0');
-  // Large arrays — load from IndexedDB, migrate from localStorage on first run
-  const idbStudents = await loadIDB(K.students);
-  const idbMarks    = await loadIDB(K.marks);
-  if (idbStudents.length === 0) {
-    // First run or migration: pull from localStorage, move to IDB, clear localStorage
-    const lsStudents = load(K.students);
-    if (lsStudents.length > 0) {
-      students = lsStudents;
-      await idbPut(K.students, students);
-      localStorage.removeItem(K.students);
-    } else { students = []; }
-  } else { students = idbStudents; }
-  if (idbMarks.length === 0) {
-    const lsMarks = load(K.marks);
-    if (lsMarks.length > 0) {
-      marks = lsMarks;
-      await idbPut(K.marks, marks);
-      localStorage.removeItem(K.marks);
-    } else { marks = []; }
-  } else { marks = idbMarks; }
+  // Students and marks — also directly from localStorage now
+  students = load(K.students);
+  marks    = load(K.marks);
   // Inherit platform-level API key into school settings if not already set
   if (!settings.ebApiKey) {
     const platformKey = localStorage.getItem('ei_platform_api_key') || '';
