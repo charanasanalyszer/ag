@@ -45,6 +45,16 @@
 const PLATFORM_SCHOOLS_KEY  = 'ei_platform_schools';  // [{id,name,username,password,email,createdAt}]
 const PLATFORM_CREDS_KEY    = 'ei_platform_creds';    // {username, password} — set on first run
 
+// ═══════════════ TERM PAYMENT LOCK ═══════════════
+// Flip to false to restore normal login for everyone.
+// While true, every login attempt (admin, teacher, student, guest) is
+// blocked with a polite payment notice instead of being signed in.
+const PAYMENT_LOCK_ENABLED = true;
+const PAYMENT_LOCK_MESSAGE =
+  '<strong>Access on Hold</strong><br>' +
+  'Please pay for this term to continue using the system. ' +
+  'Once payment is confirmed, access will be restored — thank you for your understanding.';
+
 // ══════════════════════════════════════════════════════════════════
 //  USERNAME FORMAT RULES — enforced at creation & login
 //
@@ -853,6 +863,9 @@ async function doUnifiedLogin() {
     };
 
     if (!u || !p) { re('Please enter a username and password.'); return; }
+
+    // ── Term payment lock: block every login until payment is made ──
+    if (PAYMENT_LOCK_ENABLED) { re(PAYMENT_LOCK_MESSAGE); return; }
 
     loadPlatform();
 
